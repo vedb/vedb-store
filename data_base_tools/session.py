@@ -1,12 +1,14 @@
-""""""
 import yaml
 import sys
 import os
+import cv2
 
-class Session(object):
+from data_base_tools.subject import Subject
+
+class Session:
     """ Base class for Session Object. """
 
-    def __init__(self, session_id, move = False, export_directory = '/000/'):
+    def __init__(self, session_id, main_directory, move = False, export_directory = '/000/'):
         """ Constructor.
 
         Parameters
@@ -16,24 +18,24 @@ class Session(object):
 
         """
         self.session_id = session_id
-        self.main_directory = '/hdd01/kamran_sync/vedb/recordings_pilot/pilot_study_1'
+        self.main_directory = main_directory
         self.move = move
         self.export_directory = export_directory
         with open("/home/kamran/Code/pupil_recording_interface/data_collection.yml") as f:
             self.config_file = yaml.load(f, Loader = yaml.FullLoader)
 
+
+
+    def from_pupil(self):
+
         # Session metadata
 
-    self.subject = Subject(session_id)
-    self.world = RecordedData('world')
-    self.eyeR = RecordedData('eyeR')
-    self.eyeL = RecordedData('eyeL')
-    self.gaze = RecordedData('gaze')
-    self.head = RecordedData('head')
-
-
-    def from_pupil(self, main_directory, move = True):
-
+        self.subject = Subject(self.session_id)
+        self.world = RecordedData(self.session_id, self.main_directory, data_type = 'world')
+        self.eyeR = RecordedData(self.session_id, self.main_directory, data_type = 'eye0')
+        self.eyeL = RecordedData(self.session_id, self.main_directory, data_type = 'eye1')
+        self.gaze = RecordedData(self.session_id, self.main_directory, data_type = 'gaze')
+        self.head = RecordedData(self.session_id, self.main_directory, data_type = 't265')
 
         print('Data Collection Settings: \n')
         for k in self.config_file['Experiment'].keys():
@@ -49,11 +51,8 @@ class Session(object):
             print(k, ' : ', self.config_file['System'][k])
         print('\n')
 
-        self.world_video_file = os.path.join(self.main_directory + self.session_id, 'world.mp4')
-        self.world_video_file = os.path.join(self.main_directory + self.session_id, 'world.mp4')
 
-
-       return None
+        return None
 
 
     def save(self, directory_path):
@@ -402,10 +401,11 @@ class Session(object):
         self.plot_fps('eye0')
 
 
-class RecordedData(object):
+class RecordedData(Session):
     """ Base class for Data Object. """
 
-    def __init__(self, type = 'world'):
+    def __init__(self, session_id, main_directory, move = False,
+                    export_directory = '/000/', data_type = 'world'):
         """ Constructor.
 
         Parameters
@@ -414,34 +414,13 @@ class RecordedData(object):
             Parameter_1 .
 
         """
+        #self.main_directory = main_directory
+        super().__init__(session_id, main_directory, move = False, export_directory = '/000/')
+        self.data_type = data_type
         self.video = None
-        self.video_file = None
+        self.video_file = os.path.join(self.main_directory + self.session_id, data_type +'.mp4')
+        print('video file: ', self.video_file)
+
         self.time_stamp = None
-        self.time_stamp_file = None
-
-
-
-class Subject(object):
-    """ Base class for Subject Object. """
-
-    def __init__(self, main_directory):
-        """ Constructor.
-
-        Parameters
-        ----------
-        parameter_1: str
-            Parameter_1 .
-
-        """
-    self.subject_id = None
-    self.subject_age = None
-    self.subject_gender = None
-    self.subject_ethnicity = None 
-
-    self.experimenter = None # ID, not name
-    self.university = None # UNR / Bates / NDSU
-    self.scene_category = None #(outdoor / indoor) ## (go here)
-    self.task = None ## (do this) pp best in snippets only * activities # Sub-labels for time points, based on manual labeling or analysis
-    self.recording_duration = None
-    self.main_directory = main_directory # Name for parent folder for session
-    self.system = None
+        self.time_stamp_file = os.path.join(self.main_directory + self.session_id, data_type +'_timestamps.npy')
+        print('timestamp file: ', self.time_stamp_file)
