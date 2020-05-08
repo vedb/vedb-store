@@ -44,7 +44,16 @@ class RecordingSystem(MappedClass):
 
 
 class RecordingDevice(MappedClass):
-	def __init__(self, type='RecordingDevice', manufacturer=None, tag=None, fps=None, dbi=None, _id=None, _rev=None): # manufacturer ? 
+	def __init__(self, type='RecordingDevice', 
+		tag=None,
+		manufacturer=None,
+		name=None,
+		device_uid=None,
+		fps=None, 
+		dbi=None, 
+		_id=None, 
+		_rev=None):
+		"""Parent class for other recording devices. Inheritance is not used yet; perhaps delete"""
 		inpt = locals()
 		self.type = 'RecordingDevice'
 		for k, v in inpt.items():
@@ -59,15 +68,58 @@ class RecordingDevice(MappedClass):
 		self._db_fields = []
 
 
-
 class Camera(RecordingDevice):
-	def __init__(self, type='Camera', manufacturer=None, tag=None, resolution=None, fps=None, name=None, codec=None, device_type=None, 
-			device_uid=None, exposure=None, crf=None, color_format=None, dbi=None, _id=None, _rev=None):
-		"""
+	def __init__(self, type='Camera', 
+		tag=None, 
+		manufacturer=None, 
+		name=None,
+		device_uid=None,
+		resolution=None, 
+		fps=None,
+		codec=None, 
+		crf=None,
+		exposure=None,
+		color_format=None,
+		# More camera properties here
+		dbi=None,
+		_id=None,
+		_rev=None):
+		"""Camera recording device
+
 		Parameters
 		----------
+		tag : str
+			shorthand retrieval tag to specify this object. Intended to be more human-readable
+			than the `_id` field, which absolutely must be unique; tag can potentially be
+			the same for multiple objects (tho this is not advised)
+		manufacturer : str
+			Device manufacturer name (e.g. FLIR, Intel)
+		name : str
+			Device name (e.g. 'Chameleon', 'RealSense t265')
+		device_uid : str
+			Specifies serial number for a unique device (e.g. one particular FLIR world camera)
 		resolution : list
-			[horizontal_dim, vertical_dim]
+			[horizontal_dim, vertical_dim] of video
+		fps : int
+			Frame rate for camera (desired - note this may be an approximate frame rate 
+			depending on other camera settings)
+		codec : str
+			Encoding used to record video
+		crf : str
+			Compression factor if h264 encoding is used
+		exposure : str
+			String specifying exposure settings (e.g. 'auto')
+			TO DO: determine variety of setting that might go here.
+		color_format : str
+			Color format of video, e.g. 'RGB24', 'BGR24', etc
+		dbi : str
+			Database interface object, necessary for saving this object and for 
+			querying database for other objects from this object
+		_id : str
+			Unique database identifier
+		_rev : str
+			Unique revision number for this object in the database			
+
 		"""
 		inpt = locals()
 		self.type = 'Camera'
@@ -81,3 +133,96 @@ class Camera(RecordingDevice):
 		self._temp_fields = []
 		# Fields that are other database objects
 		self._db_fields = []
+
+
+class Odometer(RecordingDevice):
+	def __init__(self, type='Odometer', 
+		tag=None,
+		manufactuer=None,
+		name=None, 
+		device_uid=None,
+		fps=None, 
+		# More odometer properties here; SLAM version?
+		):
+		"""Class to save odometer properties
+		Parameters
+		----------
+		tag : str
+			shorthand retrieval tag to specify this object. Intended to be more human-readable
+			than the `_id` field, which absolutely must be unique; tag can potentially be
+			the same for multiple objects (tho this is not advised)
+		manufacturer : str
+			Device manufacturer name (e.g. FLIR, Intel)
+		name : str
+			Device name (e.g. 'Chameleon', 'RealSense t265')
+		device_uid : str
+			Specifies serial number for a unique device (e.g. one particular FLIR world camera)
+		resolution : list
+			[horizontal_dim, vertical_dim] of video
+		fps : int
+			Frame rate for camera (desired - note this may be an approximate frame rate 
+			depending on other camera settings)
+
+
+		"""
+
+		inpt = locals()
+		self.type = 'Odometer'
+		for k, v in inpt.items():
+			if not k in ['self', 'type',]:
+				setattr(self, k, v)
+
+		# Will be written to self.fpath (if defined)
+		self._data_fields = []
+		# Constructed on the fly and not saved to docdict
+		self._temp_fields = []
+		# Fields that are other database objects
+		self._db_fields = []
+	
+	def load(self, fpath, idx=(0, 100)):
+		"""Load function for odometry data"""
+		pass
+
+
+class GPS(RecordingDevice):
+	def __init__(self, type='GPS', 
+		tag=None,
+		manufactuer=None,
+		name=None, 
+		device_uid=None,
+		fps=None, 
+		# More GPS properties here
+		):
+		"""Class to save odometer properties
+		Parameters
+		----------
+		tag : str
+			shorthand retrieval tag to specify this object. Intended to be more human-readable
+			than the `_id` field, which absolutely must be unique; tag can potentially be
+			the same for multiple objects (tho this is not advised)
+		manufacturer : str
+			Device manufacturer name (e.g. FLIR, Intel)
+		name : str
+			Device name (e.g. 'Chameleon', 'RealSense t265')
+		device_uid : str
+			Specifies serial number for a unique device (e.g. one particular FLIR world camera)
+		resolution : list
+			[horizontal_dim, vertical_dim] of video
+		fps : int
+			Frame rate for GPS (may be approximate; unclear)
+		"""
+		inpt = locals()
+		self.type = 'Odometer'
+		for k, v in inpt.items():
+			if not k in ['self', 'type',]:
+				setattr(self, k, v)
+
+		# Will be written to self.fpath (if defined)
+		self._data_fields = []
+		# Constructed on the fly and not saved to docdict
+		self._temp_fields = []
+		# Fields that are other database objects
+		self._db_fields = []
+	
+	def load(self, fpath, idx=(0, 100)):
+		pass		
