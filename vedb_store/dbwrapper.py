@@ -1,7 +1,7 @@
 # Wrapper for docdb classes
 from .orm.mappedclass import MappedClass
 from .orm.session import Session #, Labels? (subclass Stimulus to allow for non-image/auditory/whatever inputs?)
-from .orm.recording import RecordingSystem, RecordingDevice, Camera
+from .orm.recording import RecordingSystem, RecordingDevice, Camera, Odometer, GPS
 from .orm.segment import Segment
 
 try: 
@@ -13,6 +13,8 @@ try:
         RecordingSystem=RecordingSystem,
         RecordingDevice=RecordingDevice,
         Camera=Camera,
+        GPS=GPS,
+        Odometer=Odometer,
         )
 except ImportError:
     print("Could not initialize classes in docdb database")

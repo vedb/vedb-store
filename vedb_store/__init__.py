@@ -1,6 +1,6 @@
 from . import orm
 from .orm.session import Session
-from .orm.recording import RecordingSystem, RecordingDevice, Camera
+from .orm.recording import RecordingSystem, RecordingDevice, Camera, Odometer, GPS
 from .orm.segment import Segment
 
 try:

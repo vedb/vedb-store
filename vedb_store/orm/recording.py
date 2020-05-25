@@ -34,7 +34,8 @@ class RecordingSystem(MappedClass):
 		self.tracking_camera = tracking_camera
 		self.odometry = odometry
 		self.gps = gps
-		
+		self._id = _id
+		self._rev = _rev
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []
 		# Constructed on the fly and not saved to docdict
@@ -138,10 +139,13 @@ class Camera(RecordingDevice):
 class Odometer(RecordingDevice):
 	def __init__(self, type='Odometer', 
 		tag=None,
-		manufactuer=None,
+		manufacturer=None,
 		name=None, 
 		device_uid=None,
-		fps=None, 
+		fps=None,
+                dbi=None,
+                _id=None,
+                _rev=None,
 		# More odometer properties here; SLAM version?
 		):
 		"""Class to save odometer properties
@@ -187,10 +191,13 @@ class Odometer(RecordingDevice):
 class GPS(RecordingDevice):
 	def __init__(self, type='GPS', 
 		tag=None,
-		manufactuer=None,
+		manufacturer=None,
 		name=None, 
 		device_uid=None,
 		fps=None, 
+                dbi=None,
+                _id=None,
+                _rev=None,
 		# More GPS properties here
 		):
 		"""Class to save odometer properties
@@ -212,7 +219,7 @@ class GPS(RecordingDevice):
 			Frame rate for GPS (may be approximate; unclear)
 		"""
 		inpt = locals()
-		self.type = 'Odometer'
+		self.type = 'GPS'
 		for k, v in inpt.items():
 			if not k in ['self', 'type',]:
 				setattr(self, k, v)
