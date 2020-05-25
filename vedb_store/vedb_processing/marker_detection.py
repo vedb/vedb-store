@@ -60,10 +60,9 @@ def detect_checkerboard(path, checkerboard_size, scale, start_seconds, end_secon
 
             # Read the next frame from the video. If you set frame 749 above then the code will return the last frame.
             ret, img = cap.read()
-
+            img = cv2.resize(img, None, fx=scale_x, fy=scale_y)
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-            gray = cv2.resize(gray, None, fx=scale_x, fy=scale_y)
             # Find the chess board corners
             ret, corners = cv2.findChessboardCorners(gray, (6, 8), None)
 
@@ -75,7 +74,7 @@ def detect_checkerboard(path, checkerboard_size, scale, start_seconds, end_secon
                 corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
 
                 # Draw and display the corners
-                img_1 = cv2.drawChessboardCorners(cv2.resize(img, None, fx=scale_x, fy=scale_y), (6, 8), corners2, ret)
+                img_1 = cv2.drawChessboardCorners(img, (6, 8), corners2, ret)
 
                 gaze_index = np.argmin(
                     np.abs((gaze_data_frame.gaze_timestamp.values - world_time_stamps[count]).astype(float)))
@@ -102,12 +101,9 @@ def detect_checkerboard(path, checkerboard_size, scale, start_seconds, end_secon
                 thickness = 1
                 text = 'confidence: ' + str(np.round(gaze_data_frame.confidence.values[gaze_index], 3))
                 # Using cv2.putText() method
-                img_1 = cv2.putText(img_1, text, org, font,
+                img = cv2.putText(img_1, text, org, font,
                                     font_scale, color, thickness, cv2.LINE_AA)
 
-                cv2.imshow('Frame', img_1)
-                if cv2.waitKey(5) & 0xFF == ord('q'):
-                    break
                 # print('before : ', corners)
                 corners2[:, 0] = corners2[:, 0] * (1 / scale_x)
                 corners2[:, 1] = corners2[:, 1] * (1 / scale_y)
@@ -119,9 +115,9 @@ def detect_checkerboard(path, checkerboard_size, scale, start_seconds, end_secon
                 my_string = '1'
             else:
                 my_string = '0'
-                # cv2.imshow('img',gray)
-                # if cv2.waitKey(2) & 0xFF == ord('q'):
-                #    break
+            cv2.imshow('img', img)
+            if cv2.waitKey(2) & 0xFF == ord('q'):
+                break
     print('\nDone!')
     cv2.destroyAllWindows()
 
