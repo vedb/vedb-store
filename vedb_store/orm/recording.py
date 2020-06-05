@@ -143,9 +143,9 @@ class Odometer(RecordingDevice):
 		name=None, 
 		device_uid=None,
 		fps=None,
-                dbi=None,
-                _id=None,
-                _rev=None,
+		dbi=None,
+		_id=None,
+		_rev=None,
 		# More odometer properties here; SLAM version?
 		):
 		"""Class to save odometer properties
@@ -195,9 +195,9 @@ class GPS(RecordingDevice):
 		name=None, 
 		device_uid=None,
 		fps=None, 
-                dbi=None,
-                _id=None,
-                _rev=None,
+		dbi=None,
+		_id=None,
+		_rev=None,
 		# More GPS properties here
 		):
 		"""Class to save odometer properties
