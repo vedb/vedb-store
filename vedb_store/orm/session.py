@@ -29,11 +29,12 @@ class Session(MappedClass):
 		inpt = locals()
 		self.type = 'Session'
 		for k, v in inpt.items():
-			if not k in ['self', 'type', 'start_time']:
+			if not k in ['self', 'type', 'start_time', 'recording_duration']:
 				setattr(self, k, v)
 		self._paths = None
 		self._features = None
 		self._start_time = start_time
+		self._recording_duration = recording_duration
 		# Introspection
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []
@@ -77,12 +78,27 @@ class Session(MappedClass):
 				try:
 					# Kludge because first element of many timestamp 
 					# arrays appears to be (spuriously) zero
-					tt = np.load(tfile)[:100]
+					wait_frames = 1000
+					tt = np.load(tfile)[:wait_frames]
 					starts.append(np.min(tt[tt>0])) 
 				except:
 					print(f'Missing timestamps for {k}')
 			self._start_time = np.min(starts)
 		return self._start_time
+
+	@property
+	def recording_duration(self):
+		"""Duration of recording in seconds"""
+		if self._recording_duration is None:
+			durations = []
+			for k, v in self.paths.items():
+				time_path, data_path = v
+				tt = np.load(time_path)
+				stream_time = tt[-1] - self.start_time
+				durations.append(stream_time)
+			self._recording_duration = np.min(durations)
+		return self._recording_duration
+
 	
 	@property
 	def paths(self):
