@@ -47,7 +47,7 @@ class Session(MappedClass):
 		"""Update list of available data to load from path"""
 		pass
 	
-	def load(self, data_type, idx=(0, 100)):
+	def load(self, data_type, idx=(0, 100), **kwargs):
 		"""
 		Parameters
 		----------
@@ -64,7 +64,7 @@ class Session(MappedClass):
 			tt_clip = tt[ti]
 			indices, = np.nonzero(ti)
 			st_i, fin_i = indices[0], indices[-1]+1
-			dd = file_io.load_array(df, idx=(st_i, fin_i))
+			dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
 			return tt_clip, dd
 
 	@property
@@ -93,6 +93,8 @@ class Session(MappedClass):
 			durations = []
 			for k, v in self.paths.items():
 				time_path, data_path = v
+				if not os.path.exists(time_path):
+					continue
 				tt = np.load(time_path)
 				stream_time = tt[-1] - self.start_time
 				durations.append(stream_time)
