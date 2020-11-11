@@ -1,7 +1,10 @@
 from .mappedclass import MappedClass
+from .subject import Subject
+from .recording import Camera, GPS, Odometer, RecordingSystem
 from .. import options
 import file_io
 import numpy as np
+import yaml
 import os
 
 BASE_PATH = options.config.get('paths', 'vedb_directory')
@@ -15,8 +18,8 @@ BASE_PATH = options.config.get('paths', 'vedb_directory')
 # dbi field - need it, yes?
 
 class Session(MappedClass):
-	def __init__(self, subject_id=None, subject_age=None, subject_gender=None, subject_ethnicity=None,
-		experimenter=None, university=None, task=None, scene_category=None, folder=None, data_available=None,
+	def __init__(self, subject=None, experimenter=None, study_site=None, instruction=None, scene=None, folder=None, data_available=None,
+		lighting=None, weather=None, 
 		recording_duration=None, recording_system=None, start_time=None, type='Session', dbi=None, _id=None, _rev=None):
 		"""Class for a data collection session for vedb project
 		start_time : float
@@ -41,7 +44,7 @@ class Session(MappedClass):
 		# Constructed on the fly and not saved to docdict
 		self._temp_fields = ['paths', 'features']
 		# Fields that are other database objects
-		self._db_fields = ['recording_system']
+		self._db_fields = ['recording_system', 'subject']
 
 	def refresh(self):
 		"""Update list of available data to load from path"""
@@ -125,6 +128,146 @@ class Session(MappedClass):
 			# perhaps sort these by tag?
 			self._features = self.dbi.query(type='FeatureSpace', session=self._id)
 		return self._features
+	@classmethod
+	def from_folder(cls, folder, dbinterface):
+		"""Creates a new instance of this class from the given `docdict`.
+		"""
+		ob = cls.__new__(cls)
+		# Look for meta-data in folder
+		yaml_file = os.path.join(folder, 'config.yaml')
+		if not os.path.exists(yaml_file):
+			raise ValueError('yaml file not found!')
+		yaml_doc = yaml.load(yaml_file)
+		# Check for fields in the yaml file
+		session_fields = ['study_site',
+							'experimenter_id',
+							'lighting',
+							'scene',
+							'weather',
+							'instruction',
+							'tilt_angle',]
+		subject_fields = ['subject_id',
+							'age',
+							'gender',
+							'ethnicity',
+							'IPD',
+							'height',]
+		required_fields = session_fields + subject_fields
+		for field in required_fields:
+			if not field in yaml_doc['metadata']:
+				raise ValueError('Missing field %s'%field)
+			# Get folder
+			_, folder_toplevel = os.path.split(folder)
+			# strftime call to parse folder name to date
+			# ADD PARSING FUNCTION HERE
+			session_date = folder_toplevel
+		# Get subject, check for existence in database
+		subject_params = dict((sf, yaml_doc[sf]) for sf in subject_fields)
+		subject = Subject(**subject_params, dbi=dbi)
+		# Check for exisistence of this subject!!
+		# If subject doesn't exist, save subject
+		def parse_resolution(res_string):
+			out = res_string.strip('()').split(',')
+			out = [int(x) for x in out]
+			return out
+		# Get world camera, check for existence in database
+		wc_params = yaml_doc['streams']['video']['world']
+		recording_params = yaml_doc['commands']['record']['video']['world']
+		world_camera = Camera(
+					manufacturer=wc_params['device_type'], 
+					device_uid=wc_params['device_uid'],
+					resolution=parse_resolution(wc_params['resolution']),
+					fps=wc_params['fps'],
+					codec=recording_params['codec'],
+					crf=int(recording_params['encoder_kwargs']['crf']),
+					preset=recording_params['encoder_kwargs']['preset'],
+					color_format=wc_params['color_format'],
+					settings=wc_params['settings'], # includes exposure info
+					)
+		# Check for existence of this camera in database
+		# Ask for tag if not present
+		# TO DO 
+
+		# Get t265 camera, check for existence in database
+		cam_params = yaml_doc['streams']['video']['t265']
+		recording_params = yaml_doc['commands']['record']['video']['t265']
+		tracking_camera = Camera(
+					manufacturer=cam_params['device_type'], 
+					device_uid=cam_params['device_uid'],
+					resolution=parse_resolution(cam_params['resolution']),
+					fps=cam_params['fps'],
+					codec=recording_params['codec'],
+					crf=int(recording_params['encoder_kwargs']['crf']),
+					preset=recording_params['encoder_kwargs']['preset'],
+					color_format=cam_params['color_format'],
+					# May need to specify settings, may not
+					#settings=cam_params['settings'], # includes exposure info
+					)
+		# Check for existence of this camera in database
+		# Ask for tag if not present
+		# TO DO 
+
+		# Get t265 odometer, check for existence in database
+		# TO DO 
+
+		# Get eye cameras, check for existence in database
+		cam_params = yaml_doc['streams']['video']['eye0']
+		recording_params = yaml_doc['commands']['record']['video']['eye0']
+		eye_right = Camera(
+					manufacturer=cam_params['device_type'], 
+					device_uid=cam_params['device_uid'],
+					resolution=parse_resolution(cam_params['resolution']),
+					fps=cam_params['fps'],
+					codec=recording_params['codec'],
+					crf=int(recording_params['encoder_kwargs']['crf']),
+					preset=recording_params['encoder_kwargs']['preset'],
+					color_format=cam_params['color_format'],
+					# May need to specify settings, may not
+					#settings=cam_params['settings'], # includes exposure info
+					)
+		# Check for existence of this camera in database
+		# Ask for tag if not present
+		# TO DO 		
+		cam_params = yaml_doc['streams']['video']['eye1']
+		recording_params = yaml_doc['commands']['record']['video']['eye1']
+		eye_left = Camera(
+					manufacturer=cam_params['device_type'], 
+					device_uid=cam_params['device_uid'],
+					resolution=parse_resolution(cam_params['resolution']),
+					fps=cam_params['fps'],
+					codec=recording_params['codec'],
+					crf=int(recording_params['encoder_kwargs']['crf']),
+					preset=recording_params['encoder_kwargs']['preset'],
+					color_format=cam_params['color_format'],
+					# May need to specify settings, may not
+					#settings=cam_params['settings'], # includes exposure info
+					)
+		# Check for existence of this camera in database
+		# Ask for tag if not present
+		# TO DO
+
+		recording_system = RecordingSystem(world_camera=world_camera,
+											eye_left=eye_left,
+											eye_right=eye_right,
+											tracking_camera=tracking_camera,
+											odometry=odometry, # UNDEFINED TO DO
+											gps=gps, # UNDEFINED TO DO
+											dbi=dbi,
+											)
+		# query for recording system in database
+		# ask for tag if not present
+		# TO DO 
+		
+		# Define recording device, w/ tag
+		params = dict((sf, yaml_doc[sf]) for sf in session_fields)
+		params['subject'] = subject
+		params['dbi'] = dbi
+		params['folder'] = folder_toplevel
+		params['date'] = session_date
+		recording_system = recording_system
+
+		ob.__init__(dbi=dbinterface, **params)
+		return ob
 
 
 

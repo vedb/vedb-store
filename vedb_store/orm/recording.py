@@ -4,8 +4,17 @@ import file_io
 import os
 
 class RecordingSystem(MappedClass):
-	def __init__(self, type='RecordingSystem', tag=None, world_camera=None, eye_left=None, eye_right=None, tracking_camera=None, 
-		odometry=None, gps=None, dbi=None, _id=None, _rev=None):
+	def __init__(self, type='RecordingSystem', 
+		tag=None, 
+		world_camera=None, 
+		eye_left=None, 
+		eye_right=None, 
+		tracking_camera=None, 
+		odometry=None, 
+		gps=None, 
+		dbi=None, 
+		_id=None, 
+		_rev=None):
 		"""Class to store the components and settings of all devices used to collect the data
 		
 		Parameters
@@ -79,7 +88,8 @@ class Camera(RecordingDevice):
 		fps=None,
 		codec=None, 
 		crf=None,
-		exposure=None,
+		preset=None,
+		settings=None,
 		color_format=None,
 		# More camera properties here
 		dbi=None,
@@ -108,9 +118,8 @@ class Camera(RecordingDevice):
 			Encoding used to record video
 		crf : str
 			Compression factor if h264 encoding is used
-		exposure : str
-			String specifying exposure settings (e.g. 'auto')
-			TO DO: determine variety of setting that might go here.
+		settings : dict
+			dict specifying exposure settings and other parameters
 		color_format : str
 			Color format of video, e.g. 'RGB24', 'BGR24', etc
 		dbi : str
