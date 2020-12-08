@@ -169,6 +169,8 @@ class Session(MappedClass):
 							'IPD',
 							'height',]
 		required_fields = session_fields + subject_fields
+		if not 'metadata' in yaml_doc:
+			raise ValueError("Missing metadata for whole session.")
 		for field in required_fields:
 			if not field in yaml_doc['metadata']:
 				raise ValueError('Missing field %s'%field)
