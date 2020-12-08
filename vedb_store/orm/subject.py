@@ -18,7 +18,7 @@ BASE_PATH = options.config.get('paths', 'vedb_directory')
 # dbi field - need it, yes?
 
 class Subject(MappedClass):
-	def __init__(self, subject_id=None, age=None, gender=None, ethnicity=None, ipd=None, height=None,
+	def __init__(self, subject_id=None, age=None, gender=None, ethnicity=None, IPD=None, height=None,
 		type='Subject', dbi=None, _id=None, _rev=None):
 		"""Class for a data collection session for vedb project
 		start_time : float

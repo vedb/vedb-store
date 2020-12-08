@@ -18,9 +18,25 @@ BASE_PATH = options.config.get('paths', 'vedb_directory')
 # dbi field - need it, yes?
 
 class Session(MappedClass):
-	def __init__(self, subject=None, experimenter=None, study_site=None, instruction=None, scene=None, folder=None, data_available=None,
-		lighting=None, weather=None, 
-		recording_duration=None, recording_system=None, start_time=None, type='Session', dbi=None, _id=None, _rev=None):
+	def __init__(self, 
+                subject=None, 
+                experimenter_id=None, 
+                study_site=None, 
+                date=None,
+                instruction=None, 
+                scene=None, 
+                folder=None, 
+		lighting=None, 
+                weather=None, 
+                tilt_angle=None,
+                data_available=None,
+		recording_duration=None, 
+                recording_system=None, 
+                start_time=None, 
+                type='Session', 
+                dbi=None, 
+                _id=None, 
+                _rev=None):
 		"""Class for a data collection session for vedb project
 		start_time : float
 			Start time is the common start time for all clocks. Necessary for syncronization of disparate 
@@ -137,7 +153,7 @@ class Session(MappedClass):
 		yaml_file = os.path.join(folder, 'config.yaml')
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
-		yaml_doc = yaml.load(yaml_file)
+		yaml_doc = yaml.load(open(yaml_file, mode='r'))
 		# Check for fields in the yaml file
 		session_fields = ['study_site',
 							'experimenter_id',
@@ -162,8 +178,8 @@ class Session(MappedClass):
 			# ADD PARSING FUNCTION HERE
 			session_date = folder_toplevel
 		# Get subject, check for existence in database
-		subject_params = dict((sf, yaml_doc[sf]) for sf in subject_fields)
-		subject = Subject(**subject_params, dbi=dbi)
+		subject_params = dict((sf, yaml_doc['metadata'][sf]) for sf in subject_fields)
+		subject = Subject(**subject_params, dbi=dbinterface)
 		# Check for exisistence of this subject!!
 		# If subject doesn't exist, save subject
 		def parse_resolution(res_string):
@@ -208,6 +224,9 @@ class Session(MappedClass):
 		# TO DO 
 
 		# Get t265 odometer, check for existence in database
+		odometry = None
+		# GET GPS data if available
+		gps = None
 		# TO DO 
 
 		# Get eye cameras, check for existence in database
@@ -252,16 +271,15 @@ class Session(MappedClass):
 											tracking_camera=tracking_camera,
 											odometry=odometry, # UNDEFINED TO DO
 											gps=gps, # UNDEFINED TO DO
-											dbi=dbi,
+											dbi=dbinterface,
 											)
 		# query for recording system in database
 		# ask for tag if not present
 		# TO DO 
 		
 		# Define recording device, w/ tag
-		params = dict((sf, yaml_doc[sf]) for sf in session_fields)
+		params = dict((sf, yaml_doc['metadata'][sf]) for sf in session_fields)
 		params['subject'] = subject
-		params['dbi'] = dbi
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
 		recording_system = recording_system
