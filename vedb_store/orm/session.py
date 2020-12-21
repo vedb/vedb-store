@@ -50,6 +50,7 @@ class Session(MappedClass):
 		for k, v in inpt.items():
 			if not k in ['self', 'type', 'start_time', 'recording_duration']:
 				setattr(self, k, v)
+		self._base_path = BASE_PATH
 		self._paths = None
 		self._features = None
 		self._start_time = start_time
@@ -129,9 +130,9 @@ class Session(MappedClass):
 			_paths = {}
 			for fnm, nm in zip(to_find, names):
 				tt, ee = os.path.splitext(fnm)
-				data_path = os.path.join(BASE_PATH, self.folder, fnm)
+				data_path = os.path.join(self._base_path, self.folder, fnm)
 				data_path = self._resolve_sync_dir(data_path)
-				timestamp_path = os.path.join(BASE_PATH, self.folder, tt + '_timestamps.npy')
+				timestamp_path = os.path.join(self._base_path, self.folder, tt + '_timestamps.npy')
 				timestamp_path = self._resolve_sync_dir(timestamp_path)
 				if os.path.exists(data_path):
 					_paths[nm] = (timestamp_path, data_path)
@@ -145,7 +146,7 @@ class Session(MappedClass):
 			self._features = self.dbi.query(type='FeatureSpace', session=self._id)
 		return self._features
 	@classmethod
-	def from_folder(cls, folder, dbinterface):
+	def from_folder(cls, folder, dbinterface, raise_error=True):
 		"""Creates a new instance of this class from the given `docdict`.
 		"""
 		ob = cls.__new__(cls)
@@ -169,21 +170,46 @@ class Session(MappedClass):
 							'IPD',
 							'height',]
 		required_fields = session_fields + subject_fields
-		if not 'metadata' in yaml_doc:
-			raise ValueError("Missing metadata for whole session.")
-		for field in required_fields:
-			if not field in yaml_doc['metadata']:
-				raise ValueError('Missing field %s'%field)
-			# Get folder
-			_, folder_toplevel = os.path.split(folder)
-			# strftime call to parse folder name to date
-			# ADD PARSING FUNCTION HERE
-			session_date = folder_toplevel
+		if 'metadata' in yaml_doc:
+			# Current version, good.
+			metadata = yaml_doc['metadata']
+		elif 'metadata' in yaml_doc['commands']['record']:
+			# Legacy config compatibility
+			metadata = yaml_doc['commands']['record']['metadata']
+		else: 
+			metadata = None
+		if metadata is None:
+			raise ValueError("Missing metadata in yaml file in folder.")
+		missing_fields = list(set(required_fields) - set(metadata.keys()))
+		if len(missing_fields) > 0:
+			if raise_error: 
+				raise ValueError('Missing fields: {}'.format(missing_fields))
+			else:
+				print('Missing fields: ', missing_fields)
+		# Get folder
+		base_dir, folder_toplevel = os.path.split(folder)
+		# strftime call to parse folder name to date
+		# ADD PARSING FUNCTION HERE
+		session_date = folder_toplevel # [:10] for date (YYYY_MM_DD) only; for now, keep time
 		# Get subject, check for existence in database
-		subject_params = dict((sf, yaml_doc['metadata'][sf]) for sf in subject_fields)
+		subject_params = dict((sf, metadata[sf]) for sf in subject_fields)
 		subject = Subject(**subject_params, dbi=dbinterface)
-		# Check for exisistence of this subject!!
+		# Check for exisistence of this subject
+		subject = subject.db_fill(allow_multiple=False)
 		# If subject doesn't exist, save subject
+		if subject._id is None:
+		    # Subject is not in database
+		    # Display extant subjects with same subject_id:
+		    print("Extant subjects w/ same subject_id:")
+		    other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+		    print(other_subjects)
+		    print("This subject:")
+		    print(subject.docdict)
+		    yn = input("Save subject? (y/n):")
+		    if yn.lower() in ['y', 't','1']:
+		        subject.save()
+		else:
+		    print('Subject found in database!')
 		def parse_resolution(res_string):
 			out = res_string.strip('()').split(',')
 			out = [int(x) for x in out]
@@ -280,13 +306,16 @@ class Session(MappedClass):
 		# TO DO 
 		
 		# Define recording device, w/ tag
-		params = dict((sf, yaml_doc['metadata'][sf]) for sf in session_fields)
+		params = dict((sf, metadata[sf]) for sf in session_fields)
 		params['subject'] = subject
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
 		recording_system = recording_system
 
 		ob.__init__(dbi=dbinterface, **params)
+		# Temporarily set base directory to local base directory
+		# This is a bit fraught.
+		ob._base_path = base_dir
 		return ob
 
 
