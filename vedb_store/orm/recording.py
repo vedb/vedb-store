@@ -9,7 +9,8 @@ class RecordingSystem(MappedClass):
 		world_camera=None, 
 		eye_left=None, 
 		eye_right=None, 
-		tracking_camera=None, 
+		tracking_camera=None,
+		tilt_angle=None,
 		odometry=None, 
 		gps=None, 
 		dbi=None, 
@@ -29,6 +30,8 @@ class RecordingSystem(MappedClass):
 			eye camera & settings
 		tracking_camera : Camera instance
 			tracking camera & settings
+		tilt_angle : int
+		        angle of mount between tracking camera and world camera
 		odometry : RecordingDevice instance
 			Odometry recording device & settings
 		gps : RecordingDevice instance
@@ -41,6 +44,7 @@ class RecordingSystem(MappedClass):
 		self.eye_left = eye_left
 		self.eye_right = eye_right
 		self.tracking_camera = tracking_camera
+		self.tilt_angle = tilt_angle
 		self.odometry = odometry
 		self.gps = gps
 		self._id = _id
