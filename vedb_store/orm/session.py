@@ -237,8 +237,8 @@ class Session(MappedClass):
 						color_format=cam_params['color_format'],
 						)
 			if camera_type == 'world':
-				input_params['settings'] = cam_params['settings'], # includes exposure info
-			this_camera = Camera(**input_params)
+				input_params['settings'] = cam_params['settings'] # includes exposure info
+			this_camera = Camera(dbi=dbinterface, **input_params)
 			# Check for existence of this camera in database
 			this_camera = this_camera.db_fill(allow_multiple=False)
 			# If camera doesn't exist, save camera
