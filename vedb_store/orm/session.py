@@ -20,24 +20,23 @@ BASE_PATH = options.config.get('paths', 'vedb_directory')
 
 class Session(MappedClass):
 	def __init__(self, 
-                subject=None, 
-                experimenter_id=None, 
-                study_site=None, 
-                date=None,
-                instruction=None, 
-                scene=None, 
-                folder=None, 
-		lighting=None, 
-                weather=None, 
-                tilt_angle=None,
-                data_available=None,
-		recording_duration=None, 
-                recording_system=None, 
-                start_time=None, 
-                type='Session', 
-                dbi=None, 
-                _id=None, 
-                _rev=None):
+			subject=None, 
+			experimenter_id=None, 
+			study_site=None, 
+			date=None,
+			instruction=None, 
+			scene=None, 
+			folder=None, 
+			lighting=None, 
+			weather=None, 
+			data_available=None,
+			recording_duration=None, 
+			recording_system=None, 
+			start_time=None, 
+			type='Session', 
+			dbi=None, 
+			_id=None, 
+			_rev=None):
 		"""Class for a data collection session for vedb project
 		start_time : float
 			Start time is the common start time for all clocks. Necessary for syncronization of disparate 
@@ -72,6 +71,8 @@ class Session(MappedClass):
 		"""
 		Parameters
 		----------
+		data_type : string
+			one of: 'world_camera', 'tracking_camera', 'eye_camera', 
 		idx : tuple
 			(start time, end time) in seconds (this is a TIME index for now!)
 		"""
@@ -162,15 +163,15 @@ class Session(MappedClass):
 							'lighting',
 							'scene',
 							'weather',
-							'instruction',
-							'tilt_angle',]
+							'instruction',]
 		subject_fields = ['subject_id',
 							'age',
 							'gender',
 							'ethnicity',
 							'IPD',
 							'height',]
-		required_fields = session_fields + subject_fields
+		recording_fields = ['tilt_angle',]
+		required_fields = session_fields + subject_fields + recording_fields
 		if 'metadata' in yaml_doc:
 			# Current version, good.
 			metadata = yaml_doc['metadata']
@@ -202,18 +203,18 @@ class Session(MappedClass):
 		subject = subject.db_fill(allow_multiple=False)
 		# If subject doesn't exist, save subject
 		if subject._id is None:
-		    # Subject is not in database
-		    # Display extant subjects with same subject_id:
-		    print("Extant subjects w/ same subject_id:")
-		    other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
-		    print(other_subjects)
-		    print("This subject:")
-		    print(subject.docdict)
-		    yn = input("Save subject? (y/n):")
-		    if yn.lower() in ['y', 't','1']:
-		        subject.save()
+			# Subject is not in database
+			# Display extant subjects with same subject_id:
+			print("Extant subjects w/ same subject_id:")
+			other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+			print(other_subjects)
+			print("This subject:")
+			print(subject.docdict)
+			yn = input("Save subject? (y/n):")
+			if yn.lower() in ['y', 't','1']:
+				subject = subject.save()
 		else:
-		    print('Subject found in database!')
+			print('Subject found in database!')
 
 		def parse_resolution(res_string):
 			out = res_string.strip('()').split(',')
@@ -260,22 +261,31 @@ class Session(MappedClass):
 						default_tag = '{}_standard'.format(this_camera.manufacturer)
 					tag = input("Please input tag for this camera [press enter for default: %s]:"%default_tag) or default_tag
 					this_camera.tag = tag
-					this_camera.save()
+					this_camera = this_camera.save()
 			else:
 				print('%s camera found in database!'%camera_type)
 			cameras[camera_label] = this_camera
 
 		# Get t265 odometer, check for existence in database
-		odometry = None
-		# GET GPS data if available
+		# odometry = None # Leave out? 
+		# Get GPS data if available
 		gps = None
 		# TO DO 
+
+		if 'tilt_angle' in metadata:
+			tilt_angle = metadata['tilt_angle']
+		else:
+			# Error will be thrown above if tilt_angle is missing 
+			# and error is desired; here, just handle the situation
+			# if we've gotten this far
+			tilt_angle = 'unknown'
 
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
 											eye_right=cameras['eye_right'],
 											tracking_camera=cameras['tracking'],
-											odometry=odometry, # UNDEFINED TO DO
+											tilt_angle=tilt_angle,
+											# odometry=odometry, # Leave out?
 											gps=gps, # UNDEFINED TO DO
 											dbi=dbinterface,
 											)
@@ -291,9 +301,11 @@ class Session(MappedClass):
 			yn = input("Save recording_system? (y/n):")
 			if yn.lower() in ['y', 't','1']:
 				default_tag = 'vedb_standard'
+				if tilt_angle != 'unknown':
+					default_tag = '_'.join([default_tag, '%d'%int(tilt_angle)])
 				tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
 				recording_system.tag = tag
-				recording_system.save()
+				recording_system = recording_system.save()
 		else:
 			print('RecordingSystem found in database!')		
 		
@@ -302,21 +314,10 @@ class Session(MappedClass):
 		params['subject'] = subject
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
-		recording_system = recording_system
+		params['recording_system'] = recording_system
 
 		ob.__init__(dbi=dbinterface, **params)
 		# Temporarily set base directory to local base directory
 		# This is a bit fraught.
 		ob._base_path = base_dir
 		return ob
-
-
-
-# e.g.:
-# 		resolution: (1280, 1024) #(2048, 1536)
-#       fps: 30
-#       name: 'world'
-#       codec: 'libx265'
-#       device_type: flir
-#       device_uid: FLIR_19238305
-#       color_format: bgr24

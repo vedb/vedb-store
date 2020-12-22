@@ -151,7 +151,6 @@ class Odometer(RecordingDevice):
 		manufacturer=None,
 		name=None, 
 		device_uid=None,
-		fps=None,
 		dbi=None,
 		_id=None,
 		_rev=None,
@@ -170,12 +169,11 @@ class Odometer(RecordingDevice):
 			Device name (e.g. 'Chameleon', 'RealSense t265')
 		device_uid : str
 			Specifies serial number for a unique device (e.g. one particular FLIR world camera)
-		resolution : list
-			[horizontal_dim, vertical_dim] of video
-		fps : int
-			Frame rate for camera (desired - note this may be an approximate frame rate 
-			depending on other camera settings)
 
+		Notes
+		-----
+		fps does not seem to be saved / specifiable.
+		May want to include version of SLAM algorithm that generated data?
 
 		"""
 
@@ -192,10 +190,6 @@ class Odometer(RecordingDevice):
 		# Fields that are other database objects
 		self._db_fields = []
 	
-	def load(self, fpath, idx=(0, 100)):
-		"""Load function for odometry data"""
-		pass
-
 
 class GPS(RecordingDevice):
 	def __init__(self, type='GPS', 
