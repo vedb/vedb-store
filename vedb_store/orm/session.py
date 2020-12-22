@@ -3,6 +3,7 @@ from .subject import Subject
 from .recording import Camera, GPS, Odometer, RecordingSystem
 from .. import options
 import file_io
+import datetime
 import numpy as np
 import yaml
 import os
@@ -189,8 +190,11 @@ class Session(MappedClass):
 		# Get folder
 		base_dir, folder_toplevel = os.path.split(folder)
 		# strftime call to parse folder name to date
-		# ADD PARSING FUNCTION HERE
 		session_date = folder_toplevel # [:10] for date (YYYY_MM_DD) only; for now, keep time
+		try:
+			dt = datetime.datetime.strptime(session_date, '%Y_%m_%d_%H_%M_%S')
+		except:
+			print('Date not parseable!')
 		# Get subject, check for existence in database
 		subject_params = dict((sf, metadata[sf]) for sf in subject_fields)
 		subject = Subject(**subject_params, dbi=dbinterface)
@@ -210,46 +214,56 @@ class Session(MappedClass):
 		        subject.save()
 		else:
 		    print('Subject found in database!')
+
 		def parse_resolution(res_string):
 			out = res_string.strip('()').split(',')
 			out = [int(x) for x in out]
 			return out
-		# Get world camera, check for existence in database
-		wc_params = yaml_doc['streams']['video']['world']
-		recording_params = yaml_doc['commands']['record']['video']['world']
-		world_camera = Camera(
-					manufacturer=wc_params['device_type'], 
-					device_uid=wc_params['device_uid'],
-					resolution=parse_resolution(wc_params['resolution']),
-					fps=wc_params['fps'],
-					codec=recording_params['codec'],
-					crf=int(recording_params['encoder_kwargs']['crf']),
-					preset=recording_params['encoder_kwargs']['preset'],
-					color_format=wc_params['color_format'],
-					settings=wc_params['settings'], # includes exposure info
-					)
-		# Check for existence of this camera in database
-		# Ask for tag if not present
-		# TO DO 
-
-		# Get t265 camera, check for existence in database
-		cam_params = yaml_doc['streams']['video']['t265']
-		recording_params = yaml_doc['commands']['record']['video']['t265']
-		tracking_camera = Camera(
-					manufacturer=cam_params['device_type'], 
-					device_uid=cam_params['device_uid'],
-					resolution=parse_resolution(cam_params['resolution']),
-					fps=cam_params['fps'],
-					codec=recording_params['codec'],
-					crf=int(recording_params['encoder_kwargs']['crf']),
-					preset=recording_params['encoder_kwargs']['preset'],
-					color_format=cam_params['color_format'],
-					# May need to specify settings, may not
-					#settings=cam_params['settings'], # includes exposure info
-					)
-		# Check for existence of this camera in database
-		# Ask for tag if not present
-		# TO DO 
+		camera_types = ['world', 't265', 'eye0', 'eye1']
+		camera_labels = ['world', 'tracking', 'eye_right', 'eye_left']
+		cameras = {}
+		for camera_type, camera_label in zip(camera_types, camera_labels):
+			# Get world camera, check for existence in database
+			cam_params = yaml_doc['streams']['video'][camera_type]
+			recording_params = yaml_doc['commands']['record']['video'][camera_type]
+			input_params = dict(
+						manufacturer=cam_params['device_type'], 
+						device_uid=cam_params['device_uid'],
+						resolution=parse_resolution(cam_params['resolution']),
+						fps=cam_params['fps'],
+						codec=recording_params['codec'],
+						crf=int(recording_params['encoder_kwargs']['crf']),
+						preset=recording_params['encoder_kwargs']['preset'],
+						color_format=cam_params['color_format'],
+						)
+			if camera_type == 'world':
+				input_params['settings'] = cam_params['settings'], # includes exposure info
+			this_camera = Camera(**input_params)
+			# Check for existence of this camera in database
+			this_camera = this_camera.db_fill(allow_multiple=False)
+			# If camera doesn't exist, save camera
+			if this_camera._id is None:
+				# camera is not in database
+				# Display extant world cameras with same manufacturer:
+				print("Extant cameras w/ same manufacturer:")
+				other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
+				print(other_cameras)
+				print("This camera:")
+				print(this_camera.docdict)
+				yn = input("Save camera? (y/n):")
+				if yn.lower() in ['y', 't','1']:
+					if camera_type == 'eye_left':
+						default_tag = '{}_left_standard'.format(this_camera.manufacturer)
+					elif camera_type == 'eye_right':
+						default_tag = '{}_right_standard'.format(this_camera.manufacturer)
+					else:
+						default_tag = '{}_standard'.format(this_camera.manufacturer)
+					tag = input("Please input tag for this camera [press enter for default: %s]:"%default_tag) or default_tag
+					this_camera.tag = tag
+					this_camera.save()
+			else:
+				print('%s camera found in database!'%camera_type)
+			cameras[camera_label] = this_camera
 
 		# Get t265 odometer, check for existence in database
 		odometry = None
@@ -257,53 +271,31 @@ class Session(MappedClass):
 		gps = None
 		# TO DO 
 
-		# Get eye cameras, check for existence in database
-		cam_params = yaml_doc['streams']['video']['eye0']
-		recording_params = yaml_doc['commands']['record']['video']['eye0']
-		eye_right = Camera(
-					manufacturer=cam_params['device_type'], 
-					device_uid=cam_params['device_uid'],
-					resolution=parse_resolution(cam_params['resolution']),
-					fps=cam_params['fps'],
-					codec=recording_params['codec'],
-					crf=int(recording_params['encoder_kwargs']['crf']),
-					preset=recording_params['encoder_kwargs']['preset'],
-					color_format=cam_params['color_format'],
-					# May need to specify settings, may not
-					#settings=cam_params['settings'], # includes exposure info
-					)
-		# Check for existence of this camera in database
-		# Ask for tag if not present
-		# TO DO 		
-		cam_params = yaml_doc['streams']['video']['eye1']
-		recording_params = yaml_doc['commands']['record']['video']['eye1']
-		eye_left = Camera(
-					manufacturer=cam_params['device_type'], 
-					device_uid=cam_params['device_uid'],
-					resolution=parse_resolution(cam_params['resolution']),
-					fps=cam_params['fps'],
-					codec=recording_params['codec'],
-					crf=int(recording_params['encoder_kwargs']['crf']),
-					preset=recording_params['encoder_kwargs']['preset'],
-					color_format=cam_params['color_format'],
-					# May need to specify settings, may not
-					#settings=cam_params['settings'], # includes exposure info
-					)
-		# Check for existence of this camera in database
-		# Ask for tag if not present
-		# TO DO
-
-		recording_system = RecordingSystem(world_camera=world_camera,
-											eye_left=eye_left,
-											eye_right=eye_right,
-											tracking_camera=tracking_camera,
+		recording_system = RecordingSystem(world_camera=cameras['world'],
+											eye_left=cameras['eye_left'],
+											eye_right=cameras['eye_right'],
+											tracking_camera=cameras['tracking'],
 											odometry=odometry, # UNDEFINED TO DO
 											gps=gps, # UNDEFINED TO DO
 											dbi=dbinterface,
 											)
 		# query for recording system in database
-		# ask for tag if not present
-		# TO DO 
+		recording_system = recording_system.db_fill(allow_multiple=False)
+		if recording_system._id is None:
+			# Recording system is not in database
+			print("Extant recording systems:")
+			other_systems = dbinterface.query(type='RecordingSystem')
+			print(other_systems)
+			print("This camera:")
+			print(recording_system.docdict)
+			yn = input("Save recording_system? (y/n):")
+			if yn.lower() in ['y', 't','1']:
+				default_tag = 'vedb_standard'
+				tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
+				recording_system.tag = tag
+				recording_system.save()
+		else:
+			print('RecordingSystem found in database!')		
 		
 		# Define recording device, w/ tag
 		params = dict((sf, metadata[sf]) for sf in session_fields)
