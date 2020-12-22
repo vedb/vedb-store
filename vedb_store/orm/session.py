@@ -4,6 +4,7 @@ from .recording import Camera, GPS, Odometer, RecordingSystem
 from .. import options
 import file_io
 import datetime
+import textwrap
 import numpy as np
 import yaml
 import os
@@ -321,3 +322,25 @@ class Session(MappedClass):
 		# This is a bit fraught.
 		ob._base_path = base_dir
 		return ob
+
+	def __repr__(self):
+		rstr = textwrap.dedent("""
+			vedb_store.Session
+			{d:>12s}: {date}
+			{ss:>12s}: {study_site}/{experimenter_id}
+			{r:>12s}: {recording_system}
+			{i:>12d}: {instruction}
+			{sc:>12d}: {scene}
+			""")
+		return rstr.format(
+			d='date', 
+			date=self.date,
+			ss='collected by', 
+			study_site=self.study_site, 
+			experimenter_id=self.experimenter_id,
+			r='system', 
+			recording_system=self.recording_system.tag, 
+			instruction=self.instruction,
+			sc='scene',
+			scene=self.scene,
+			)

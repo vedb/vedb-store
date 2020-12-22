@@ -1,6 +1,7 @@
 from .mappedclass import MappedClass
 from .. import options
 import file_io
+import textwrap
 import os
 
 class RecordingSystem(MappedClass):
@@ -55,7 +56,29 @@ class RecordingSystem(MappedClass):
 		self._temp_fields = []
 		# Fields that are other database objects
 		self._db_fields = ['world_camera', 'eye_left', 'eye_right', 'tracking_camera', 'odometry', 'gps']
-
+	def __repr__(self):
+		rstr = textwrap.dedent("""
+			vedb_store.RecordingSystem (tag: {tag})
+			{w:>12s}: {world} - {w_uid}
+			{t:>12s}: {tracking} - {t_uid}
+			{e0:>12s}: {eye_right} - {e0_uid}
+			{e1:>12s}: {eye_left} - {e1_uid}
+			""")
+		return rstr.format(
+			tag=self.tag,
+			w='world_camera',
+			world=self.world_camera.tag,
+			w_uid=self.world_camera.device_uid,
+			t='tracking_camera',
+			tracking=self.tracking_camera.tag,
+			t_uid=self.tracking_camera.device_uid,
+			e0='eye_right',
+			eye_right=self.eye_right.tag,
+			e0_uid=self.eye_right.device_uid,
+			e1='eye_left', 
+			eye_left=self.eye_left.tag,
+			e1=self.eye_left.device_uid,
+			)
 
 class RecordingDevice(MappedClass):
 	def __init__(self, type='RecordingDevice', 
@@ -148,6 +171,18 @@ class Camera(RecordingDevice):
 		# Fields that are other database objects
 		self._db_fields = []
 
+	def __repr__(self):
+		rstr = textwrap.dedent("""
+			vedb_store.Camera (tag: {tag})
+			{manufacturer} : {id} : [{x}, {y}] : {fps} fps
+			""")
+		return rstr.format(
+			tag=self.tag,
+			manufacturer=self.manufacturer,
+			id=self.device_uid,
+			x=self.resolution[0],
+			y=self.resolution[1],
+			fps=self.fps)
 
 class Odometer(RecordingDevice):
 	def __init__(self, type='Odometer', 
