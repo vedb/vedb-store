@@ -149,7 +149,7 @@ class Session(MappedClass):
 			self._features = self.dbi.query(type='FeatureSpace', session=self._id)
 		return self._features
 	@classmethod
-	def from_folder(cls, folder, dbinterface, raise_error=True):
+	def from_folder(cls, folder, dbinterface, raise_error=True, db_save=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		"""
 		ob = cls.__new__(cls)
@@ -211,9 +211,10 @@ class Session(MappedClass):
 			print(other_subjects)
 			print("This subject:")
 			print(subject.docdict)
-			yn = input("Save subject? (y/n):")
-			if yn.lower() in ['y', 't','1']:
-				subject = subject.save()
+			if db_save:
+				yn = input("Save subject? (y/n):")
+				if yn.lower() in ['y', 't','1']:
+					subject = subject.save()
 		else:
 			print('Subject found in database!')
 
@@ -252,19 +253,20 @@ class Session(MappedClass):
 				print(other_cameras)
 				print("This camera:")
 				print(this_camera.docdict)
-				yn = input("Save camera? (y/n):")
-				if yn.lower() in ['y', 't','1']:
-					if camera_type == 'eye_left':
-						default_tag = '{}_left_standard'.format(this_camera.manufacturer)
-					elif camera_type == 'eye_right':
-						default_tag = '{}_right_standard'.format(this_camera.manufacturer)
-					else:
-						default_tag = '{}_standard'.format(this_camera.manufacturer)
-					tag = input("Please input tag for this camera [press enter for default: %s]:"%default_tag) or default_tag
-					this_camera.tag = tag
-					this_camera = this_camera.save()
+				if db_save:
+					yn = input("Save camera? (y/n):")
+					if yn.lower() in ['y', 't','1']:
+						if camera_label == 'eye_left':
+							default_tag = '{}_left_standard'.format(this_camera.manufacturer)
+						elif camera_label == 'eye_right':
+							default_tag = '{}_right_standard'.format(this_camera.manufacturer)
+						else:
+							default_tag = '{}_standard'.format(this_camera.manufacturer)
+						tag = input("Please input tag for this camera [press enter for default: %s]:"%default_tag) or default_tag
+						this_camera.tag = tag
+						this_camera = this_camera.save()
 			else:
-				print('%s camera found in database!'%camera_type)
+				print('%s camera found in database!'%camera_label)
 			cameras[camera_label] = this_camera
 
 		# Get t265 odometer, check for existence in database
@@ -291,22 +293,25 @@ class Session(MappedClass):
 											dbi=dbinterface,
 											)
 		# query for recording system in database
-		recording_system = recording_system.db_fill(allow_multiple=False)
+		if db_save:
+			# Potential problems here.
+			recording_system = recording_system.db_fill(allow_multiple=False)
 		if recording_system._id is None:
 			# Recording system is not in database
 			print("Extant recording systems:")
 			other_systems = dbinterface.query(type='RecordingSystem')
 			print(other_systems)
-			print("This camera:")
+			print("This recording system:")
 			print(recording_system.docdict)
-			yn = input("Save recording_system? (y/n):")
-			if yn.lower() in ['y', 't','1']:
-				default_tag = 'vedb_standard'
-				if tilt_angle != 'unknown':
-					default_tag = '_'.join([default_tag, '%d'%int(tilt_angle)])
-				tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
-				recording_system.tag = tag
-				recording_system = recording_system.save()
+			if db_save:
+				yn = input("Save recording_system? (y/n):")
+				if yn.lower() in ['y', 't','1']:
+					default_tag = 'vedb_standard'
+					if tilt_angle != 'unknown':
+						default_tag = '_'.join([default_tag, '%d'%int(tilt_angle)])
+					tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
+					recording_system.tag = tag
+					recording_system = recording_system.save()
 		else:
 			print('RecordingSystem found in database!')		
 		
@@ -329,8 +334,8 @@ class Session(MappedClass):
 			{d:>12s}: {date}
 			{ss:>12s}: {study_site}/{experimenter_id}
 			{r:>12s}: {recording_system}
-			{i:>12d}: {instruction}
-			{sc:>12d}: {scene}
+			{i:>12s}: {instruction}
+			{sc:>12s}: {scene}
 			""")
 		return rstr.format(
 			d='date', 
@@ -340,6 +345,7 @@ class Session(MappedClass):
 			experimenter_id=self.experimenter_id,
 			r='system', 
 			recording_system=self.recording_system.tag, 
+			i='instruction',
 			instruction=self.instruction,
 			sc='scene',
 			scene=self.scene,
