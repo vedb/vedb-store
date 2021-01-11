@@ -166,6 +166,21 @@ class Session(MappedClass):
 	def from_folder(cls, folder, dbinterface=None, raise_error=True, db_save=False, overwrite_yaml=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		
+		Parameters
+		----------
+		folder : string
+			full path to folder name
+		dbinterface : vedb-store.docdb.dbinterface
+			db interface
+		raise_error : bool
+			Whether to raise an error if fields are missing. True simply raises an error, 
+			False allows manual input of missing fields. 
+		overwrite_yaml : bool
+			Whether to create a new yaml file. Old yaml file will be saved as `config_orig.yaml`
+			unless that file already exists (in which case no backup will be created - only
+			original is backed up)
+
+
 		"""
 		ob = cls.__new__(cls)
 		# Look for meta-data in folder
@@ -280,8 +295,8 @@ class Session(MappedClass):
 				yn = input("Save recording_system? (y/n):")
 				if yn.lower() in ['y', 't','1']:
 					default_tag = 'vedb_standard'
-					if tilt_angle != 'unknown':
-						default_tag = '_'.join([default_tag, '%d'%int(tilt_angle)])
+					if recording_system.tilt_angle != 'unknown':
+						default_tag = '_'.join([default_tag, '%d'%int(recording_system.tilt_angle)])
 					tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
 					recording_system.tag = tag
 					recording_system = recording_system.save()
@@ -335,6 +350,15 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 
 	Parameters
 	----------
+	yaml_file : string
+		path to yaml file
+	raise_error : bool
+		Whether to raise an error if fields are missing. True simply raises an error, 
+		False allows manual input of missing fields. 
+	overwrite_yaml : bool
+		Whether to create a new yaml file. Old yaml file will be saved as `config_orig.yaml`
+		unless that file already exists (in which case no backup will be created - only
+		original is backed up)
 
 	"""
 	# Assure yaml_file is a pathlib.Path
