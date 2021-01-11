@@ -5,6 +5,7 @@ from .. import options
 import file_io
 import datetime
 import textwrap
+import pathlib
 import numpy as np
 import yaml
 import os
