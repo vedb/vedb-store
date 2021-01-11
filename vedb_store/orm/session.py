@@ -10,6 +10,19 @@ import yaml
 import os
 
 BASE_PATH = options.config.get('paths', 'vedb_directory')
+SESSION_FIELDS = ['study_site',
+					'experimenter_id',
+					'lighting',
+					'scene',
+					'weather',
+					'instruction',]
+SUBJECT_FIELDS = ['subject_id',
+					'age',
+					'gender',
+					'ethnicity',
+					'IPD',
+					'height',]
+RECORDING_FIELDS = ['tilt_angle',]
 
 
 # Question: track data_available in database? 
@@ -123,7 +136,6 @@ class Session(MappedClass):
 				durations.append(stream_time)
 			self._recording_duration = np.min(durations)
 		return self._recording_duration
-
 	
 	@property
 	def paths(self):
@@ -148,9 +160,11 @@ class Session(MappedClass):
 			# perhaps sort these by tag?
 			self._features = self.dbi.query(type='FeatureSpace', session=self._id)
 		return self._features
+
 	@classmethod
-	def from_folder(cls, folder, dbinterface, raise_error=True, db_save=False):
+	def from_folder(cls, folder, dbinterface=None, raise_error=True, db_save=False, overwrite_yaml=False):
 		"""Creates a new instance of this class from the given `docdict`.
+		
 		"""
 		ob = cls.__new__(cls)
 		# Look for meta-data in folder
@@ -158,37 +172,7 @@ class Session(MappedClass):
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
 		yaml_doc = yaml.load(open(yaml_file, mode='r'))
-		# Check for fields in the yaml file
-		session_fields = ['study_site',
-							'experimenter_id',
-							'lighting',
-							'scene',
-							'weather',
-							'instruction',]
-		subject_fields = ['subject_id',
-							'age',
-							'gender',
-							'ethnicity',
-							'IPD',
-							'height',]
-		recording_fields = ['tilt_angle',]
-		required_fields = session_fields + subject_fields + recording_fields
-		if 'metadata' in yaml_doc:
-			# Current version, good.
-			metadata = yaml_doc['metadata']
-		elif 'metadata' in yaml_doc['commands']['record']:
-			# Legacy config compatibility
-			metadata = yaml_doc['commands']['record']['metadata']
-		else: 
-			metadata = None
-		if metadata is None:
-			raise ValueError("Missing metadata in yaml file in folder.")
-		missing_fields = list(set(required_fields) - set(metadata.keys()))
-		if len(missing_fields) > 0:
-			if raise_error: 
-				raise ValueError('Missing fields: {}'.format(missing_fields))
-			else:
-				print('Missing fields: ', missing_fields)
+		metadata = get_yaml_metadata(yaml_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
 		# Get folder
 		base_dir, folder_toplevel = os.path.split(folder)
 		# strftime call to parse folder name to date
@@ -198,20 +182,19 @@ class Session(MappedClass):
 		except:
 			print('Date not parseable!')
 		# Get subject, check for existence in database
-		subject_params = dict((sf, metadata[sf]) for sf in subject_fields)
+		subject_params = dict((sf, metadata[sf]) for sf in SUBJECT_FIELDS)
 		subject = Subject(**subject_params, dbi=dbinterface)
 		# Check for exisistence of this subject
 		subject = subject.db_fill(allow_multiple=False)
 		# If subject doesn't exist, save subject
 		if subject._id is None:
 			# Subject is not in database
-			# Display extant subjects with same subject_id:
-			print("Extant subjects w/ same subject_id:")
-			other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
-			print(other_subjects)
-			print("This subject:")
-			print(subject.docdict)
 			if db_save:
+				print("Extant subjects w/ same subject_id:")
+				other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+				print(other_subjects)
+				print("This subject:")
+				print(subject.docdict)
 				yn = input("Save subject? (y/n):")
 				if yn.lower() in ['y', 't','1']:
 					subject = subject.save()
@@ -222,6 +205,7 @@ class Session(MappedClass):
 			out = res_string.strip('()').split(',')
 			out = [int(x) for x in out]
 			return out
+
 		camera_types = ['world', 't265', 'eye0', 'eye1']
 		camera_labels = ['world', 'tracking', 'eye_right', 'eye_left']
 		cameras = {}
@@ -247,13 +231,12 @@ class Session(MappedClass):
 			# If camera doesn't exist, save camera
 			if this_camera._id is None:
 				# camera is not in database
-				# Display extant world cameras with same manufacturer:
-				print("Extant cameras w/ same manufacturer:")
-				other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
-				print(other_cameras)
-				print("This camera:")
-				print(this_camera.docdict)
 				if db_save:
+					print("Extant cameras w/ same manufacturer:")
+					other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
+					print(other_cameras)
+					print("This camera:")
+					print(this_camera.docdict)
 					yn = input("Save camera? (y/n):")
 					if yn.lower() in ['y', 't','1']:
 						if camera_label == 'eye_left':
@@ -269,26 +252,15 @@ class Session(MappedClass):
 				print('%s camera found in database!'%camera_label)
 			cameras[camera_label] = this_camera
 
-		# Get t265 odometer, check for existence in database
-		# odometry = None # Leave out? 
 		# Get GPS data if available
-		gps = None
 		# TO DO 
-
-		if 'tilt_angle' in metadata:
-			tilt_angle = metadata['tilt_angle']
-		else:
-			# Error will be thrown above if tilt_angle is missing 
-			# and error is desired; here, just handle the situation
-			# if we've gotten this far
-			tilt_angle = 'unknown'
+		gps = None		
 
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
 											eye_right=cameras['eye_right'],
 											tracking_camera=cameras['tracking'],
-											tilt_angle=tilt_angle,
-											# odometry=odometry, # Leave out?
+											tilt_angle=metadata['tilt_angle'],
 											gps=gps, # UNDEFINED TO DO
 											dbi=dbinterface,
 											)
@@ -298,12 +270,12 @@ class Session(MappedClass):
 			recording_system = recording_system.db_fill(allow_multiple=False)
 		if recording_system._id is None:
 			# Recording system is not in database
-			print("Extant recording systems:")
-			other_systems = dbinterface.query(type='RecordingSystem')
-			print(other_systems)
-			print("This recording system:")
-			print(recording_system.docdict)
 			if db_save:
+				print("Extant recording systems:")
+				other_systems = dbinterface.query(type='RecordingSystem')
+				print(other_systems)
+				print("This recording system:")
+				print(recording_system.docdict)
 				yn = input("Save recording_system? (y/n):")
 				if yn.lower() in ['y', 't','1']:
 					default_tag = 'vedb_standard'
@@ -316,7 +288,7 @@ class Session(MappedClass):
 			print('RecordingSystem found in database!')		
 		
 		# Define recording device, w/ tag
-		params = dict((sf, metadata[sf]) for sf in session_fields)
+		params = dict((sf, metadata[sf]) for sf in SESSION_FIELDS)
 		params['subject'] = subject
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
@@ -350,3 +322,64 @@ class Session(MappedClass):
 			sc='scene',
 			scene=self.scene,
 			)
+
+
+def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
+	"""Extract metadata data from yaml file, filling in missing fields
+
+	Optionally backs up original file and creates a new file with filled-in fields
+
+	Only works for metadata (regarding experiment, subject, etc), not recording
+	devices, so far. 
+
+	Parameters
+	----------
+
+	"""
+	# Assure yaml_file is a pathlib.Path
+	yaml_file = pathlib.Path(yaml_file)
+	with open(yaml_file, mode='r') as fid:
+		yaml_doc = yaml.load(fid)
+	required_fields = SESSION_FIELDS + SUBJECT_FIELDS + RECORDING_FIELDS
+	if 'metadata' in yaml_doc:
+		# Current version, good.
+		metadata = yaml_doc['metadata']
+		metadata_location = 'base'
+	elif 'metadata' in yaml_doc['commands']['record']:
+		# Legacy config compatibility
+		metadata = yaml_doc['commands']['record']['metadata']
+		metadata_location = 'commands/record'
+	else: 
+		metadata = None
+	if metadata is None:
+		raise ValueError("Missing metadata in yaml file in folder.")
+	missing_fields = list(set(required_fields) - set(metadata.keys()))
+	if len(missing_fields) > 0:
+		if raise_error: 
+			raise ValueError('Missing fields: {}'.format(missing_fields))
+		else:
+			print('Missing fields: ', missing_fields)
+			for mf in missing_fields:
+				value = input("Enter value for %s [press enter for 'unknown', type 'abort' to quit]"%mf) or 'unknown'
+				if value.lower() in ('abort' "'abort'"):
+					raise Exception('Manual quit.')
+				if mf in ('tilt_angle',):
+					value = int(value)
+				metadata[mf] = value
+		if overwrite_yaml:
+			# Optionally replace yaml file with new one
+			if metadata_location == 'base':
+				yaml_doc['metadata'] = metadata
+			elif metadata_location == 'commands/record':
+				yaml_doc['commands']['record']['metadata'] = metadata			
+			new_yaml_file = yaml_file.parent / 'config_orig.yaml'
+			if new_yaml_file.exists():
+				# Get rid of new one, original is already saved
+				yaml_file.unlink()            
+			else:
+				# Create backup
+				print('copying to %s'%new_yaml_file)
+				yaml_file.rename(new_yaml_file)            
+			with open(yaml_file, mode='w') as fid:
+				yaml.dump(yaml_doc, fid)
+	return metadata
