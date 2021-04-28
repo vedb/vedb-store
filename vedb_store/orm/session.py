@@ -390,7 +390,7 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 		raise ValueError("Missing metadata in yaml file in folder.")
 	metadata_keys = list(metadata.keys())
 	metadata_keys = [k for k in metadata_keys if metadata[k] is not None]
-	missing_fields = list(set(required_fields) - set(metadata.keys()))
+	missing_fields = list(set(required_fields) - set(metadata_keys))
 	if len(missing_fields) > 0:
 		if raise_error: 
 			raise ValueError('Missing fields: {}'.format(missing_fields))
