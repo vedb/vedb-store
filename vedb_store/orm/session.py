@@ -198,7 +198,17 @@ class Session(MappedClass):
 		except:
 			print('Date not parseable!')
 		# Get subject, check for existence in database
-		subject_params = dict((sf, metadata[sf]) for sf in SUBJECT_FIELDS)
+		subject_params = dict((sf, metadata[sf]) for sf in SUBJECT_FIELDS) # if metadata[sf] is not None)
+		if 'subject_id' not in subject_params:
+			if 'experimenter_id' in metadata:
+				e_id = 'experimenter_id=%s, '%metadata['experiment_id']
+			else:
+				e_id = ''
+			s_id = input("Enter subject_id (%s'abort' to quit): "%e_id)
+			if s_id.lower() == 'abort':
+				raise Exception('Manual quit')
+			else:
+				subject_params['subject_id'] = s_id
 		subject = Subject(**subject_params, dbi=dbinterface)
 		# Check for exisistence of this subject
 		subject = subject.db_fill(allow_multiple=False)
@@ -378,11 +388,14 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 		metadata = None
 	if metadata is None:
 		raise ValueError("Missing metadata in yaml file in folder.")
+	metadata_keys = list(metadata.keys())
+	metadata_keys = [k for k in metadata_keys if metadata[k] is not None]
 	missing_fields = list(set(required_fields) - set(metadata.keys()))
 	if len(missing_fields) > 0:
 		if raise_error: 
 			raise ValueError('Missing fields: {}'.format(missing_fields))
 		else:
+			# Fill in missing fields
 			print('Missing fields: ', missing_fields)
 			for mf in missing_fields:
 				value = input("Enter value for %s [press enter for 'unknown', type 'abort' to quit]"%mf) or 'unknown'
