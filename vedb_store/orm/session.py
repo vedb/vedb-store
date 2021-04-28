@@ -1,6 +1,6 @@
 from .mappedclass import MappedClass
 from .subject import Subject
-from .recording import Camera, GPS, Odometer, RecordingSystem
+from .recording import Camera, GPS, RecordingSystem
 from .. import options
 import file_io
 import datetime
