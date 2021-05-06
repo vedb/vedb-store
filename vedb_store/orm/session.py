@@ -183,6 +183,12 @@ class Session(MappedClass):
 
 		"""
 		ob = cls.__new__(cls)
+		print('\n>>> Importing folder %s'%folder)
+		_, this_folder = os.path.split(folder)
+		check = dbinterface.query(type='Session', folder=this_folder)
+		if len(check) > 0:
+			print('SESSION FOUND IN DATABASE.')
+			return None
 		# Look for meta-data in folder
 		yaml_file = os.path.join(folder, 'config.yaml')
 		if not os.path.exists(yaml_file):
@@ -198,10 +204,10 @@ class Session(MappedClass):
 		except:
 			print('Date not parseable!')
 		# Get subject, check for existence in database
-		subject_params = dict((sf, metadata[sf]) for sf in SUBJECT_FIELDS) # if metadata[sf] is not None)
+		subject_params = dict((sf, metadata[sf]) for sf in SUBJECT_FIELDS if metadata[sf] is not None)
 		if 'subject_id' not in subject_params:
 			if 'experimenter_id' in metadata:
-				e_id = 'experimenter_id=%s, '%metadata['experiment_id']
+				e_id = 'experimenter_id=%s, '%metadata['experimenter_id']
 			else:
 				e_id = ''
 			s_id = input("Enter subject_id (%s'abort' to quit): "%e_id)
@@ -342,7 +348,7 @@ class Session(MappedClass):
 			study_site=self.study_site, 
 			experimenter_id=self.experimenter_id,
 			r='system', 
-			recording_system=self.recording_system.tag, 
+			recording_system=self.recording_system.tag if isinstance(self.recording_system, MappedClass) else self.recording_system, 
 			i='instruction',
 			instruction=self.instruction,
 			sc='scene',
@@ -387,9 +393,22 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 	else: 
 		metadata = None
 	if metadata is None:
-		raise ValueError("Missing metadata in yaml file in folder.")
+		if raise_error:
+			raise ValueError("Missing metadata in yaml file in folder.")
+		else:
+			metadata = {}
 	metadata_keys = list(metadata.keys())
 	metadata_keys = [k for k in metadata_keys if metadata[k] is not None]
+	# TEMP
+	if 'subject_id' not in metadata_keys:
+		if 'experimenter_id' in metadata_keys:
+			default = metadata['experimenter_id']
+		else:
+			default = 'unknown'
+		value = input("Enter value for subject_id [press enter for '%s', type 'abort' to quit]"%(default)) or default
+		metadata['subject_id'] = value
+		metadata_keys = list(metadata.keys())
+		metadata_keys = [k for k in metadata_keys if metadata[k] is not None]
 	missing_fields = list(set(required_fields) - set(metadata_keys))
 	if len(missing_fields) > 0:
 		if raise_error: 
@@ -398,9 +417,18 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 			# Fill in missing fields
 			print('Missing fields: ', missing_fields)
 			for mf in missing_fields:
-				value = input("Enter value for %s [press enter for 'unknown', type 'abort' to quit]"%mf) or 'unknown'
+				if (mf in SUBJECT_FIELDS):
+					default = 'None'
+				elif mf == 'tilt_angle':
+					default = '100'
+				else:
+					default = 'unknown'
+
+				value = input("Enter value for %s [press enter for '%s', type 'abort' to quit]"%(mf, default)) or default
 				if value.lower() in ('abort' "'abort'"):
 					raise Exception('Manual quit.')
+				elif value.lower() in ('none'):
+					value = None
 				if mf in ('tilt_angle',):
 					value = int(value)
 				metadata[mf] = value
