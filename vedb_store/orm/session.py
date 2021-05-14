@@ -3,6 +3,7 @@ from .subject import Subject
 from .recording import Camera, GPS, RecordingSystem
 from .. import options
 import file_io
+from collections import OrderedDict
 import datetime
 import textwrap
 import pathlib
@@ -74,7 +75,7 @@ class Session(MappedClass):
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []
 		# Constructed on the fly and not saved to docdict
-		self._temp_fields = ['paths', 'features']
+		self._temp_fields = ['paths', 'features', 'datetime']
 		# Fields that are other database objects
 		self._db_fields = ['recording_system', 'subject']
 
@@ -91,8 +92,10 @@ class Session(MappedClass):
 		idx : tuple
 			(start time, end time) in seconds (this is a TIME index for now!)
 		"""
-		if data_type in ('gps', 'odometry'):
-			raise NotImplementedError("Note yet!") # Fix me!
+		if data_type == 'gps':
+			tmp = parse_gps(self.paths[data_type][1])
+			tt = tmp[:,0]
+			return tt, tmp
 		else:
 			tf, df = self.paths[data_type]
 			st, fin = idx
@@ -101,7 +104,10 @@ class Session(MappedClass):
 			tt_clip = tt[ti]
 			indices, = np.nonzero(ti)
 			st_i, fin_i = indices[0], indices[-1]+1
-			dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
+			if data_type in ('odometry',):
+				dd = file_io.load_msgpack(df, idx=(st_i, fin_i), **kwargs)
+			else:
+				dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
 			return tt_clip, dd
 
 	@property
@@ -137,6 +143,10 @@ class Session(MappedClass):
 				durations.append(stream_time)
 			self._recording_duration = np.min(durations)
 		return self._recording_duration
+	@property
+	def datetime(self):
+		dt = datetime.datetime.strptime(self.date, '%Y_%m_%d_%H_%M_%S')
+		return dt
 	
 	@property
 	def paths(self):
@@ -184,19 +194,31 @@ class Session(MappedClass):
 		"""
 		ob = cls.__new__(cls)
 		print('\n>>> Importing folder %s'%folder)
-		_, this_folder = os.path.split(folder)
-		check = dbinterface.query(type='Session', folder=this_folder)
-		if len(check) > 0:
-			print('SESSION FOUND IN DATABASE.')
-			return None
+		base_dir, folder_toplevel = os.path.split(folder)
+		if folder_toplevel == '':
+			# Catch edge case of running this without full path
+			folder_toplevel = base_dir
+			base_dir = ''
+		if (len(base_dir) == 0) or (base_dir[0] != '/'):
+			base_dir = os.path.abspath(os.path.join(os.path.curdir, base_dir))
+
+		if db_save:
+			# Check for presence of folder in database if we are aiming to save session in database
+			check = dbinterface.query(type='Session', folder=folder_toplevel)
+			if len(check) > 0:
+				print('SESSION FOUND IN DATABASE.')
+				return check[0]
+			elif len(check) > 1:
+				raise Exception('More than one database session found with this date!')				
 		# Look for meta-data in folder
 		yaml_file = os.path.join(folder, 'config.yaml')
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
 		yaml_doc = yaml.load(open(yaml_file, mode='r'))
-		metadata = get_yaml_metadata(yaml_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
-		# Get folder
-		base_dir, folder_toplevel = os.path.split(folder)
+		
+		participant_file = os.path.join(folder, 'user_info.csv')
+		metadata = get_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
+		
 		# strftime call to parse folder name to date
 		session_date = folder_toplevel # [:10] for date (YYYY_MM_DD) only; for now, keep time
 		try:
@@ -217,7 +239,8 @@ class Session(MappedClass):
 				subject_params['subject_id'] = s_id
 		subject = Subject(**subject_params, dbi=dbinterface)
 		# Check for exisistence of this subject
-		subject = subject.db_fill(allow_multiple=False)
+		if dbinterface is not None:
+			subject = subject.db_fill(allow_multiple=False)
 		# If subject doesn't exist, save subject
 		if subject._id is None:
 			# Subject is not in database
@@ -283,11 +306,10 @@ class Session(MappedClass):
 			else:
 				print('%s camera found in database!'%camera_label)
 			cameras[camera_label] = this_camera
-
-		# Get GPS data if available
-		# TO DO 
-		gps = None		
-
+		if os.path.exists(os.path.join(folder, 'gps.csv')):
+			gps = 'phone'
+		else:
+			gps = None
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
 											eye_right=cameras['eye_right'],
@@ -297,11 +319,10 @@ class Session(MappedClass):
 											dbi=dbinterface,
 											)
 		# query for recording system in database
-		if db_save:
-			# Potential problems here.
+		if dbinterface is not None:
 			recording_system = recording_system.db_fill(allow_multiple=False)
 		if recording_system._id is None:
-			# Recording system is not in database
+			# Recording system is not in database; give option to save it.
 			if db_save:
 				print("Extant recording systems:")
 				other_systems = dbinterface.query(type='RecordingSystem')
@@ -325,6 +346,7 @@ class Session(MappedClass):
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
 		params['recording_system'] = recording_system
+		print(params)
 
 		ob.__init__(dbi=dbinterface, **params)
 		# Temporarily set base directory to local base directory
@@ -356,7 +378,7 @@ class Session(MappedClass):
 			)
 
 
-def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
+def get_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=False):
 	"""Extract metadata data from yaml file, filling in missing fields
 
 	Optionally backs up original file and creates a new file with filled-in fields
@@ -397,18 +419,10 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 			raise ValueError("Missing metadata in yaml file in folder.")
 		else:
 			metadata = {}
+	user_info = parse_user_info(participant_file)
+	metadata.update(user_info)
 	metadata_keys = list(metadata.keys())
-	metadata_keys = [k for k in metadata_keys if metadata[k] is not None]
-	# TEMP
-	if 'subject_id' not in metadata_keys:
-		if 'experimenter_id' in metadata_keys:
-			default = metadata['experimenter_id']
-		else:
-			default = 'unknown'
-		value = input("Enter value for subject_id [press enter for '%s', type 'abort' to quit]"%(default)) or default
-		metadata['subject_id'] = value
-		metadata_keys = list(metadata.keys())
-		metadata_keys = [k for k in metadata_keys if metadata[k] is not None]
+	metadata_keys = [k for k in metadata_keys if (metadata[k] is not None) and metadata[k] != '']
 	missing_fields = list(set(required_fields) - set(metadata_keys))
 	if len(missing_fields) > 0:
 		if raise_error: 
@@ -449,3 +463,99 @@ def get_yaml_metadata(yaml_file, raise_error=True, overwrite_yaml=False):
 			with open(yaml_file, mode='w') as fid:
 				yaml.dump(yaml_doc, fid)
 	return metadata
+
+
+def parse_user_info(fname):
+	"""Parse user_info csv file for session"""
+	with open(fname) as fid:
+		lines = fid.readlines()
+		out = dict(tuple([y.strip() for y in x.split(',')]) for x in lines)
+		for k in out.keys():
+			if k in ['IPD']:
+				try:
+					out[k] = float(out[k])
+				except ValueError:
+					out[k] = None
+			elif k in ['height', 'age']:
+				try:
+					out[k] = int(out[k])
+				except ValueError:
+					out[k] = None
+	_ = out.pop('key')
+	return out
+
+### --- GPS parsing --- ###
+# Perhaps not the best place for this, but OK for now:
+syntax = OrderedDict(**{
+  1:  ['gps', 'lat', 'lon', 'alt'],     # deg, deg, meters MSL WGS84
+  3:  ['accel', 'x', 'y', 'z'],         # m/s/s
+  4:  ['gyro', 'x', 'y', 'z'],          # rad/s
+  5:  ['mag', 'x', 'y', 'z'],           # microTesla
+  6:  ['gpscart', 'x', 'y', 'z'],       # (Cartesian XYZ) meters
+  7:  ['gpsv', 'x', 'y', 'z'],          # m/s
+  8:  ['gpstime', ''],                  # ms
+  81: ['orientation', 'x', 'y', 'z'],   # degrees
+  82: ['lin_acc',     'x', 'y', 'z'],
+  83: ['gravity',     'x', 'y', 'z'],   # m/s/s
+  84: ['rotation',    'x', 'y', 'z'],   # radians
+  85: ['pressure',    ''],              # ???
+  86: ['battemp', ''],                  # centigrade
+# Not exactly sensors, but still useful data channels:
+ -10: ['systime', ''],
+ -11: ['from', 'IP', 'port'],
+})
+
+index_to_column = OrderedDict(**{
+  1:  [1, 2, 3],     # deg, deg, meters MSL WGS84
+  3:  [4, 5, 6],     # m/s/s
+  4:  [7, 8, 9],     # rad/s
+  5:  [10, 11, 12],  # microTesla
+  6:  [13, 14, 15],  # (Cartesian XYZ) meters
+  7:  [16, 17, 18],  # m/s
+  8:  [19],          # ms
+  81: [20, 21, 22],  # degrees
+  82: [23, 24, 25],
+  83: [26, 27, 28],  # m/s/s
+  84: [29, 30, 31],  # radians
+  85: [32],          # ???
+  86: [33],          # centigrade
+
+# Not exactly sensors, but still useful data channels:
+ -10: [34],
+ -11: [35, 36],
+})
+
+column_keys = list(syntax.keys())
+column_names = ['time']
+for cname in syntax.values():
+    if len(cname) == 2:
+        cnames = [cname[0]]
+    else:
+        cnames = ['_'.join([cname[0], x]) for x in cname[1:]]
+    column_names += cnames    
+
+def _parse_line(line):
+    """Get contents of one line of gps.csv file"""
+    out = np.full(len(column_names), np.nan)
+    tmp = [x.strip() for x in line.split(',')]
+    tmp = [np.float(x) if x is not '' else np.nan for x in tmp]
+    out[0] = tmp.pop(0)
+    while len(tmp) > 0:
+        j = tmp.pop(0)
+        if np.isnan(j):
+            continue
+        j = int(j)
+        if not int(j) in column_keys:
+            continue
+        for jj in index_to_column[j]:
+            value = tmp.pop(0)
+            #print(jj, column_names[jj], value)
+            out[jj] = value
+    return out
+
+def parse_gps(fname):
+    """Parse gps file into """
+    with open(fname) as fid:
+        lines = fid.readlines()
+    # Parse line by line
+    return np.vstack([_parse_line(line) for line in lines])

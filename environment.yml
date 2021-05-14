@@ -1,0 +1,26 @@
+name: vedb_store
+channels:
+  - anaconda
+  - conda-forge
+  - auto 
+  - vedb
+dependencies:
+  - python=3.8
+  - numpy
+  - scipy
+  - matplotlib
+  - jupyter
+  - ipython
+  - pillow
+  - h5py
+  - seaborn
+  - pandas
+  - appdirs
+  - python-couchdb
+  - opencv=4.2.0
+  - msgpack-python=0.6.2
+  - pip
+  - pip:
+    - bioread
+    - git+https://github.com/vedb/file_io.git@main
+    - git+https://github.com/vedb/docdb_lite.git@main
