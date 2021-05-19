@@ -3,6 +3,7 @@
 from .mappedclass import MappedClass
 from .. import options
 import file_io
+import textwrap
 import numpy as np
 import yaml
 import os
@@ -41,3 +42,17 @@ class Subject(MappedClass):
 		# Fields that are other database objects
 		self._db_fields = []
 	
+	def __repr__(self):
+		rstr = textwrap.dedent("""
+			vedb_store.Subject
+			{id:>12s}: {subject_id}
+			{demo:>12s}: age={age}, gender={gender}, height={height}
+			""")
+		return rstr.format(
+			id='identifier', 
+			subject_id=self.subject_id, 
+			demo='demographics', 
+			age=self.age,
+			gender=self.gender,
+			height=self.height,
+			)
