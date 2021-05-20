@@ -284,10 +284,11 @@ class Session(MappedClass):
 			# Unclear what is best to do about above wrt profiles. 
 			# Check for existence of this camera in database
 			this_camera = Camera(dbi=dbinterface, **input_params)
-			this_camera = this_camera.db_fill(allow_multiple=False)
+			if dbinterface is not None:
+				this_camera = this_camera.db_fill(allow_multiple=False)
 			# If camera doesn't exist, save camera
 			if this_camera._id is None:
-				# Camera is not in database
+				# Camera is not in database; offer to save if db_save is True
 				if db_save:
 					print("Extant cameras w/ same manufacturer:")
 					other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
@@ -314,7 +315,7 @@ class Session(MappedClass):
 			gps = 'phone'
 		else:
 			gps = None
-			
+
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
 											eye_right=cameras['eye_right'],
