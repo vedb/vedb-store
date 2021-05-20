@@ -38,6 +38,7 @@ class Session(MappedClass):
 	def __init__(self, 
 			subject=None, 
 			experimenter_id=None, 
+			experiment=None,
 			study_site=None, 
 			date=None,
 			instruction=None, 
@@ -92,10 +93,9 @@ class Session(MappedClass):
 		idx : tuple
 			(start time, end time) in seconds (this is a TIME index for now!)
 		"""
-		if data_type == 'gps':
-			tmp = parse_gps(self.paths[data_type][1])
-			tt = tmp[:,0]
-			return tt, tmp
+		if 'gps' in data_type:
+			tt, data = parse_gps(self.paths[data_type][1], data_type)
+			return tt, data
 		else:
 			tf, df = self.paths[data_type]
 			st, fin = idx
@@ -104,7 +104,7 @@ class Session(MappedClass):
 			tt_clip = tt[ti]
 			indices, = np.nonzero(ti)
 			st_i, fin_i = indices[0], indices[-1]+1
-			if data_type in ('odometry',):
+			if 'odometry' in data_type:
 				dd = file_io.load_msgpack(df, idx=(st_i, fin_i), **kwargs)
 			else:
 				dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
@@ -195,15 +195,14 @@ class Session(MappedClass):
 		ob = cls.__new__(cls)
 		print('\n>>> Importing folder %s'%folder)
 		base_dir, folder_toplevel = os.path.split(folder)
+		# Catch relative path, make into absolute path
 		if folder_toplevel == '':
-			# Catch edge case of running this without full path
 			folder_toplevel = base_dir
 			base_dir = ''
 		if (len(base_dir) == 0) or (base_dir[0] != '/'):
 			base_dir = os.path.abspath(os.path.join(os.path.curdir, base_dir))
-
+		# Check for presence of folder in database if we are aiming to save session in database
 		if db_save:
-			# Check for presence of folder in database if we are aiming to save session in database
 			check = dbinterface.query(type='Session', folder=folder_toplevel)
 			if len(check) > 0:
 				print('SESSION FOUND IN DATABASE.')
@@ -215,13 +214,13 @@ class Session(MappedClass):
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
 		yaml_doc = yaml.load(open(yaml_file, mode='r'))
-		
+		# Get participant info if present
 		participant_file = os.path.join(folder, 'user_info.csv')
 		metadata = get_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
-		
-		# strftime call to parse folder name to date
-		session_date = folder_toplevel # [:10] for date (YYYY_MM_DD) only; for now, keep time
+		# Set date	(& be explicit about what constitutes date)	
+		session_date = folder_toplevel
 		try:
+			# Assume year_month_day_hour_min_second for date specification in folder title
 			dt = datetime.datetime.strptime(session_date, '%Y_%m_%d_%H_%M_%S')
 		except:
 			print('Date not parseable!')
@@ -243,7 +242,7 @@ class Session(MappedClass):
 			subject = subject.db_fill(allow_multiple=False)
 		# If subject doesn't exist, save subject
 		if subject._id is None:
-			# Subject is not in database
+			# Subject is not in database; display other subjects
 			if db_save:
 				print("Extant subjects w/ same subject_id:")
 				other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
@@ -251,7 +250,7 @@ class Session(MappedClass):
 				print("This subject:")
 				print(subject.docdict)
 				yn = input("Save subject? (y/n):")
-				if yn.lower() in ['y', 't','1']:
+				if yn.lower() in ['y', 't', '1']:
 					subject = subject.save()
 		else:
 			print('Subject found in database!')
@@ -265,7 +264,7 @@ class Session(MappedClass):
 		camera_labels = ['world', 'tracking', 'eye_right', 'eye_left']
 		cameras = {}
 		for camera_type, camera_label in zip(camera_types, camera_labels):
-			# Get world camera, check for existence in database
+			# Get camera parameters from yaml file
 			cam_params = yaml_doc['streams']['video'][camera_type]
 			recording_params = yaml_doc['commands']['record']['video'][camera_type]
 			input_params = dict(
@@ -280,12 +279,15 @@ class Session(MappedClass):
 						)
 			if camera_type == 'world':
 				input_params['settings'] = cam_params['settings'] # includes exposure info
-			this_camera = Camera(dbi=dbinterface, **input_params)
+			# if 'eye' in camera_type:
+			# 	input_params['controls'] = cam_params['controls'] # in theory, includes exposure info
+			# Unclear what is best to do about above wrt profiles. 
 			# Check for existence of this camera in database
+			this_camera = Camera(dbi=dbinterface, **input_params)
 			this_camera = this_camera.db_fill(allow_multiple=False)
 			# If camera doesn't exist, save camera
 			if this_camera._id is None:
-				# camera is not in database
+				# Camera is not in database
 				if db_save:
 					print("Extant cameras w/ same manufacturer:")
 					other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
@@ -304,12 +306,15 @@ class Session(MappedClass):
 						this_camera.tag = tag
 						this_camera = this_camera.save()
 			else:
+				# Camera is in database
 				print('%s camera found in database!'%camera_label)
 			cameras[camera_label] = this_camera
+
 		if os.path.exists(os.path.join(folder, 'gps.csv')):
 			gps = 'phone'
 		else:
 			gps = None
+			
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
 											eye_right=cameras['eye_right'],
@@ -455,11 +460,11 @@ def get_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=F
 			new_yaml_file = yaml_file.parent / 'config_orig.yaml'
 			if new_yaml_file.exists():
 				# Get rid of new one, original is already saved
-				yaml_file.unlink()            
+				yaml_file.unlink()			
 			else:
 				# Create backup
 				print('copying to %s'%new_yaml_file)
-				yaml_file.rename(new_yaml_file)            
+				yaml_file.rename(new_yaml_file)			
 			with open(yaml_file, mode='w') as fid:
 				yaml.dump(yaml_doc, fid)
 	return metadata
@@ -467,6 +472,9 @@ def get_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=F
 
 def parse_user_info(fname):
 	"""Parse user_info csv file for session"""
+	if fname is None:
+		# Is it a good idea to just return an empty dict? Should we throw an error?
+		return {}
 	with open(fname) as fid:
 		lines = fid.readlines()
 		out = dict(tuple([y.strip() for y in x.split(',')]) for x in lines)
@@ -487,38 +495,38 @@ def parse_user_info(fname):
 ### --- GPS parsing --- ###
 # Perhaps not the best place for this, but OK for now:
 syntax = OrderedDict(**{
-  1:  ['gps', 'lat', 'lon', 'alt'],     # deg, deg, meters MSL WGS84
-  3:  ['accel', 'x', 'y', 'z'],         # m/s/s
-  4:  ['gyro', 'x', 'y', 'z'],          # rad/s
-  5:  ['mag', 'x', 'y', 'z'],           # microTesla
-  6:  ['gpscart', 'x', 'y', 'z'],       # (Cartesian XYZ) meters
-  7:  ['gpsv', 'x', 'y', 'z'],          # m/s
-  8:  ['gpstime', ''],                  # ms
+  1:  ['gps', 'lat', 'lon', 'alt'],	 # deg, deg, meters MSL WGS84
+  3:  ['accel', 'x', 'y', 'z'],		 # m/s/s
+  4:  ['gyro', 'x', 'y', 'z'],		  # rad/s
+  5:  ['mag', 'x', 'y', 'z'],		   # microTesla
+  6:  ['gpscart', 'x', 'y', 'z'],	   # (Cartesian XYZ) meters
+  7:  ['gpsv', 'x', 'y', 'z'],		  # m/s
+  8:  ['gpstime', ''],				  # ms
   81: ['orientation', 'x', 'y', 'z'],   # degrees
-  82: ['lin_acc',     'x', 'y', 'z'],
-  83: ['gravity',     'x', 'y', 'z'],   # m/s/s
-  84: ['rotation',    'x', 'y', 'z'],   # radians
-  85: ['pressure',    ''],              # ???
-  86: ['battemp', ''],                  # centigrade
+  82: ['lin_acc',	 'x', 'y', 'z'],
+  83: ['gravity',	 'x', 'y', 'z'],   # m/s/s
+  84: ['rotation',	'x', 'y', 'z'],   # radians
+  85: ['pressure',	''],			  # ???
+  86: ['battemp', ''],				  # centigrade
 # Not exactly sensors, but still useful data channels:
  -10: ['systime', ''],
  -11: ['from', 'IP', 'port'],
 })
 
 index_to_column = OrderedDict(**{
-  1:  [1, 2, 3],     # deg, deg, meters MSL WGS84
-  3:  [4, 5, 6],     # m/s/s
-  4:  [7, 8, 9],     # rad/s
+  1:  [1, 2, 3],	 # deg, deg, meters MSL WGS84
+  3:  [4, 5, 6],	 # m/s/s
+  4:  [7, 8, 9],	 # rad/s
   5:  [10, 11, 12],  # microTesla
   6:  [13, 14, 15],  # (Cartesian XYZ) meters
   7:  [16, 17, 18],  # m/s
-  8:  [19],          # ms
+  8:  [19],		  # ms
   81: [20, 21, 22],  # degrees
   82: [23, 24, 25],
   83: [26, 27, 28],  # m/s/s
   84: [29, 30, 31],  # radians
-  85: [32],          # ???
-  86: [33],          # centigrade
+  85: [32],		  # ???
+  86: [33],		  # centigrade
 
 # Not exactly sensors, but still useful data channels:
  -10: [34],
@@ -528,34 +536,75 @@ index_to_column = OrderedDict(**{
 column_keys = list(syntax.keys())
 column_names = ['time']
 for cname in syntax.values():
-    if len(cname) == 2:
-        cnames = [cname[0]]
-    else:
-        cnames = ['_'.join([cname[0], x]) for x in cname[1:]]
-    column_names += cnames    
+	if len(cname) == 2:
+		cnames = [cname[0]]
+	else:
+		cnames = ['_'.join([cname[0], x]) for x in cname[1:]]
+	column_names += cnames	
 
 def _parse_line(line):
-    """Get contents of one line of gps.csv file"""
-    out = np.full(len(column_names), np.nan)
-    tmp = [x.strip() for x in line.split(',')]
-    tmp = [np.float(x) if x is not '' else np.nan for x in tmp]
-    out[0] = tmp.pop(0)
-    while len(tmp) > 0:
-        j = tmp.pop(0)
-        if np.isnan(j):
-            continue
-        j = int(j)
-        if not int(j) in column_keys:
-            continue
-        for jj in index_to_column[j]:
-            value = tmp.pop(0)
-            #print(jj, column_names[jj], value)
-            out[jj] = value
-    return out
+	"""Get contents of one line of gps.csv file"""
+	out = np.full(len(column_names), np.nan)
+	tmp = [x.strip() for x in line.split(',')]
+	tmp = [np.float(x) if x is not '' else np.nan for x in tmp]
+	out[0] = tmp.pop(0)
+	while len(tmp) > 0:
+		j = tmp.pop(0)
+		if np.isnan(j):
+			continue
+		j = int(j)
+		if not int(j) in column_keys:
+			continue
+		for jj in index_to_column[j]:
+			value = tmp.pop(0)
+			#print(jj, column_names[jj], value)
+			out[jj] = value
+	return out
 
-def parse_gps(fname):
-    """Parse gps file into """
-    with open(fname) as fid:
-        lines = fid.readlines()
-    # Parse line by line
-    return np.vstack([_parse_line(line) for line in lines])
+def parse_gps(fname, data_type):
+	"""Parse gps file into 
+	
+	Parameters
+	----------
+	fname : string
+		Description
+	data_type : str
+		string, optionally with ':' specifying a sub-component of gps data (e.g. latitude)
+	
+	Returns
+	-------
+	timestamps : arary
+		array of timestamps for gps data. STILL NOT ON SAME TIME SCALE AS REST OF STREAMS.
+		requires cross-correlation of inertial sensor data.
+	gps_dict : OrderedDict
+		dict of gps values. 
+
+	Notes
+	-----
+	For each key, values will be removed for any values that are nans across
+	all keys for a given time point. Time points will also be removed. Thus, 
+	specifying different sub-components of 
+	"""
+	with open(fname) as fid:
+		lines = fid.readlines()
+	# Parse line by line
+	values = np.vstack([_parse_line(line) for line in lines])
+	tmp = OrderedDict((cn, val) for cn, val in zip(column_names, values))
+	tt = tmp.pop('time')
+	if ':' in data_type:
+		# Parse component of gps
+		_, gps_key = data_type.split(':')
+		key_list = [k for k in tmp.keys() if gps_key in k]
+		out = OrderedDict((k, tmp[k]) for k in key_list)
+	else:
+		out = tmp
+	# Parse for nans
+	key_list = list(out.keys())
+	value_present = np.vstack([~np.isnan(out[k]) for k in key_list]).T
+	value_present = np.any(value_present, axis=1)
+	tt = tt[value_present]
+	for k in key_list:
+		out[k] = out[k][value_present]
+
+	return tt, out
+

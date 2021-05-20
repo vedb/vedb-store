@@ -12,7 +12,9 @@ dependencies:
   - jupyter
   - ipython
   - pillow
+  - imageio
   - h5py
+  - pyyaml
   - seaborn
   - pandas
   - appdirs
@@ -21,6 +23,6 @@ dependencies:
   - msgpack-python=0.6.2
   - pip
   - pip:
-    - bioread
-    - git+https://github.com/vedb/file_io.git@main
-    - git+https://github.com/vedb/docdb_lite.git@main
+    - git+https://github.com/vedb/file_io@main
+    - git+https://github.com/vedb/docdb_lite@main
+    - git+https://github.com/vedb/vedb-store@devel
