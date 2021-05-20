@@ -194,6 +194,9 @@ class Session(MappedClass):
 		"""
 		ob = cls.__new__(cls)
 		print('\n>>> Importing folder %s'%folder)
+		# Crop '/' from end of folder if exists
+		if folder[-1] == os.path.filesep:
+			folder = folder[:-1]
 		base_dir, folder_toplevel = os.path.split(folder)
 		# Catch relative path, make into absolute path
 		if folder_toplevel == '':
