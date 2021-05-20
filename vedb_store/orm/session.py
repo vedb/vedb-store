@@ -93,8 +93,12 @@ class Session(MappedClass):
 		idx : tuple
 			(start time, end time) in seconds (this is a TIME index for now!)
 		"""
-		if 'gps' in data_type:
-			tt, data = parse_gps(self.paths[data_type][1], data_type)
+		if ':' in data_type:
+			data_type, sub_type = data_type.split(':')
+		else:
+			sub_type = None
+		if data_type == 'gps':
+			tt, data = parse_gps(self.paths[data_type][1], sub_type)
 			return tt, data
 		else:
 			tf, df = self.paths[data_type]
@@ -105,7 +109,12 @@ class Session(MappedClass):
 			indices, = np.nonzero(ti)
 			st_i, fin_i = indices[0], indices[-1]+1
 			if 'odometry' in data_type:
-				dd = file_io.load_msgpack(df, idx=(st_i, fin_i), **kwargs)
+				# Consider handling indices in load_msgpack; currently
+				# an arg for idx is there, but not functional.
+				dd = file_io.load_msgpack(df)
+				dd = dd[st_i:fin_i]
+				if sub_type is not None:
+					dd = np.array([x[sub_type] for x in dd])
 			else:
 				dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
 			return tt_clip, dd
@@ -195,7 +204,7 @@ class Session(MappedClass):
 		ob = cls.__new__(cls)
 		print('\n>>> Importing folder %s'%folder)
 		# Crop '/' from end of folder if exists
-		if folder[-1] == os.path.filesep:
+		if folder[-1] == os.path.sep:
 			folder = folder[:-1]
 		base_dir, folder_toplevel = os.path.split(folder)
 		# Catch relative path, make into absolute path
@@ -565,7 +574,7 @@ def _parse_line(line):
 			out[jj] = value
 	return out
 
-def parse_gps(fname, data_type):
+def parse_gps(fname, sub_type):
 	"""Parse gps file into 
 	
 	Parameters
@@ -595,10 +604,9 @@ def parse_gps(fname, data_type):
 	values = np.vstack([_parse_line(line) for line in lines])
 	tmp = OrderedDict((cn, val) for cn, val in zip(column_names, values))
 	tt = tmp.pop('time')
-	if ':' in data_type:
+	if sub_type is not None:
 		# Parse component of gps
-		_, gps_key = data_type.split(':')
-		key_list = [k for k in tmp.keys() if gps_key in k]
+		key_list = [k for k in tmp.keys() if sub_type in k]
 		out = OrderedDict((k, tmp[k]) for k in key_list)
 	else:
 		out = tmp
