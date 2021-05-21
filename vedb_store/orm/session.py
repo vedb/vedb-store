@@ -602,7 +602,7 @@ def parse_gps(fname, sub_type):
 		lines = fid.readlines()
 	# Parse line by line
 	values = np.vstack([_parse_line(line) for line in lines])
-	tmp = OrderedDict((cn, val) for cn, val in zip(column_names, values))
+	tmp = OrderedDict((cn, val) for cn, val in zip(column_names, values.T))
 	tt = tmp.pop('time')
 	if sub_type is not None:
 		# Parse component of gps
