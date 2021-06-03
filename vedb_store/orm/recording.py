@@ -56,7 +56,7 @@ class RecordingSystem(MappedClass):
 		# Constructed on the fly and not saved to docdict
 		self._temp_fields = []
 		# Fields that are other database objects
-		self._db_fields = ['world_camera', 'eye_left', 'eye_right', 'tracking_camera', 'odometry', 'gps']
+		self._db_fields = ['world_camera', 'eye_left', 'eye_right', 'tracking_camera', 'odometry'] #, 'gps']
 	def __repr__(self):
 		if not self._dbobjects_loaded:
 			try:

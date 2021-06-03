@@ -4,6 +4,6 @@ from .orm.recording import RecordingSystem, RecordingDevice, Camera, Odometer, G
 from .orm.segment import Segment
 from .orm.subject import Subject
 try:
-    from .dbwrapper import docdb_lite as docdb
+	from .dbwrapper import docdb_lite as docdb
 except ImportError:
-    print('Failed to import docdb - no database functions available.')
+	print('Failed to import docdb - no database functions available.')
