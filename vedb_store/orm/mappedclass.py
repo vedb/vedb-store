@@ -3,7 +3,7 @@ import os
 import six
 import json
 import warnings
-#from .. import file_io as fio
+import file_io as fio
 from ..options import config
 
 
@@ -46,33 +46,20 @@ def _id2obj_strlist(value, dbi):
     vb = dbi.is_verbose
     dbi.is_verbose = False
     v = value
-    if isinstance(value, six.string_types):
+    if isinstance(value, str):
         if value in ('None', 'multi_component'): 
             v = value
         else:
-            v = dbi.query(1, _id=value, return_objects=True) #[]
+            v = dbi.query(1, _id=value, return_objects=True)
     elif isinstance(value, (list, tuple)):
         if len(value)>0:
-            if isinstance(value[0], MappedClass): # already loaded
+            if isinstance(value[0], MappedClass): 
+                # already loaded
                 pass
-            elif isinstance(value[0], dict):
-                v = [_id2obj_dict(vv, dbi) for vv in value]
             else:
                 v = [dbi.query(1, _id=vv, return_objects=True) for vv in value]
     dbi.is_verbose = vb
     return v
-
-def _id2obj_dict(dct, dbi):
-    vb = dbi.is_verbose
-    dbi.is_verbose = False
-    for k, v in dct.items():
-        if isinstance(v, six.string_types + (list, tuple)):
-            dct[k] = _id2obj_strlist(v, dbi)
-        elif isinstance(v, dict):
-            for kk, vv in v.items():
-                dct[k][kk] = _id2obj_strlist(vv, dbi)
-    dbi.is_verbose = vb
-    return dct
 
 
 class MappedClass(object):
@@ -92,20 +79,7 @@ class MappedClass(object):
                 return None
             else:
                 # # Deal with sync path
-                # sync_dir = config.get('paths', 'sync_directory')
-                # if sync_dir != '':
-                #     # Sync dir is defined
-                #     old, new = sync_dir.split(',')
-                #     print('Swapping out {} for {}'.format(old, new))
-                #     path = self.path.replace(old, new)
-                #     path = os.path.expanduser(path)
                 path = self._resolve_sync_dir(self.path)
-                #     # Make sure it's present
-                #     if not os.path.exists(os.path.join(path, self.fname)):
-                #         warnings.warn('Sync dir ({}) defined but not present.\nReverting to db-defined path.'.format(path))
-                #         path = os.path.expanduser(self.path)
-                # else:
-                #     path = os.path.expanduser(self.path)
                 if isinstance(self.fname, (list, tuple)):
                     # Multi-file input. Get list of paths for all files.
                     return [os.path.join(path, f) for f in self.fname]
@@ -175,16 +149,14 @@ class MappedClass(object):
         dd = dict((k, self[k]) for k in fields if hasattr(self, k) and self[k] is not None)
         return dd
 
-    def db_load(self):
+    def db_load(self, recursive=True):
         """Load all attributes that are database-mapped objects objects from database.
         """
         # (All of these fields better be populated by string database IDs)
         for dbf in self._db_fields: 
             v = getattr(self, dbf)
-            if isinstance(v, six.string_types + (list, tuple)):
+            if isinstance(v, (str, list, tuple)):
                 v = _id2obj_strlist(v, self.dbi)
-            elif isinstance(v, dict):
-                v = _id2obj_dict(v, self.dbi)
             elif v is None:
                 pass
             elif isinstance(v, MappedClass):
@@ -196,6 +168,9 @@ class MappedClass(object):
                     # Combine multiple masks by and-ing together
                     v = reduce(lambda x, y:x*y, v)
             setattr(self, dbf, v)
+        if recursive:
+            for dbf in self._db_fields:
+                self[dbf].db_load(recursive=recursive)
         self._dbobjects_loaded = True
 
     def db_fill(self, skip_fields=('date_run', 'last_updated'), allow_multiple=False):
@@ -250,40 +225,13 @@ class MappedClass(object):
         """
         # Initial checks
         assert self.dbi is not None, 'Must have database interface (`dbi`) property set in order to save!'
-        # file_exists = False
-        # if hasattr(self, 'data') and self.data is None:
-        #     is_list = isinstance(self.fpath, (list, tuple))
-        #     file_exists = fio.fexists(self.path, self.fname)
-        #     if (not is_list) and (not file_exists):
-        #         raise ValueError('Please specify either an array (`data`) or a file path (`fname` and `path`) for stimulus')
         # Search for extant db object
         doc = self.db_fill(allow_multiple=False)
         if (doc._id is not None) and (doc._id in self.dbi.db) and (not is_overwrite):
             raise Exception("Found extant doc in database, and is_overwrite is set to False!")
-        # # Assure path, _id
-        # if sdir is None:
-        #     if doc.path is None:
-        #         if hasattr(self, 'experiment') and self.experiment is not None:
-        #             exp = self.experiment
-        #         else:
-        #             exp = ''
-        #         if data_folder is None:
-        #             data_folder = 'General'
-        #         doc.path = os.path.join(config.get('db_dirs', 'base_dir'), exp, data_folder)
-        # else:
-        #     doc.path = sdir
-        # if not os.path.exists(doc.path):
-        #     # Fraught for cloud paths. No cloud paths for now (2020/03). Hi future users; sorry.
-        #     os.makedirs(doc.path)
+        # Assure path, _id
         if doc._id is None:
             doc._id = self.dbi.get_uuid()
-        # if doc.fname is None:
-        #     doc.fname = self._fname
-        # Save data, or maybe not
-        # if file_exists:
-        #     # Do nothing; data resides in separate files that are already on disk somewhere
-        #     pass 
-        # else:
         if len(self.datadict) > 0:
             fio.save_arrays(doc.path, doc.fname, meta=doc.docdict, **self.datadict)
         # Save header info to database
