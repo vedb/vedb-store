@@ -6,7 +6,6 @@ import numpy as np
 import yaml
 
 
-BASE_PATH = options.config.get('paths', 'vedb_directory')
 SESSION_FIELDS = ['study_site',
 					'experimenter_id',
 					'lighting',
@@ -88,6 +87,9 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 					value = None
 				if mf in ('tilt_angle',):
 					value = int(value)
+				elif mf in ('age', 'height'):
+					if value is not None and value not in ('unknown', 'None'):
+						value = int(value)
 				metadata[mf] = value
 		if overwrite_yaml:
 			# Optionally replace yaml file with new one

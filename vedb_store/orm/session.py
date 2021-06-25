@@ -14,6 +14,8 @@ import os
 
 from ..utils import parse_sensorstream_gps, parse_vedb_metadata, SUBJECT_FIELDS, SESSION_FIELDS
 
+BASE_PATH = options.config.get('paths', 'vedb_directory')
+
 
 # Question: track data_available in database? 
 # For feature extraction: there may be multiple versions and/or parameters that we would like to use to compute stuff. 
@@ -108,7 +110,7 @@ class Session(MappedClass):
 		else:
 			tf, df = self.paths[data_type]
 			if time_idx is not None:
-				st, fin = idx
+				st, fin = time_idx
 				tt = np.load(tf) - self.start_time
 				ti = (tt > st) & (tt < fin)
 				tt_clip = tt[ti]
@@ -117,7 +119,7 @@ class Session(MappedClass):
 			elif frame_idx is not None:
 				st_i, fin_i = frame_idx
 			else:
-
+				raise ValueError('Please specify either `time_idx` or `frame_idx`')
 			if 'odometry' in data_type:
 				# Consider handling indices in load_msgpack; currently
 				# an arg for idx is there, but not functional.
