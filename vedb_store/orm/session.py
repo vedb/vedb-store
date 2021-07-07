@@ -74,7 +74,7 @@ class Session(MappedClass):
 		"""Update list of available data to load from path. WIP."""
 		pass
 	
-	def load(self, data_type, time_idx=(0, 10), frame_idx=None, **kwargs):
+	def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
 		"""
 		Parameters
 		----------
@@ -109,15 +109,16 @@ class Session(MappedClass):
 			return tt, data
 		else:
 			tf, df = self.paths[data_type]
+			tt = np.load(tf) - self.start_time
 			if time_idx is not None:
 				st, fin = time_idx
-				tt = np.load(tf) - self.start_time
 				ti = (tt > st) & (tt < fin)
 				tt_clip = tt[ti]
 				indices, = np.nonzero(ti)
 				st_i, fin_i = indices[0], indices[-1]+1
 			elif frame_idx is not None:
 				st_i, fin_i = frame_idx
+				tt_clip = tt[st_i:fin_i]
 			else:
 				raise ValueError('Please specify either `time_idx` or `frame_idx`')
 			if 'odometry' in data_type:
