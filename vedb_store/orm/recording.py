@@ -12,7 +12,7 @@ class RecordingSystem(MappedClass):
 		eye_right=None, 
 		tracking_camera=None,
 		tilt_angle=None,
-		odometry=None, 
+		rig_version=None,
 		gps=None, 
 		dbi=None, 
 		_id=None, 
@@ -33,8 +33,6 @@ class RecordingSystem(MappedClass):
 			tracking camera & settings
 		tilt_angle : int
 		        angle of mount between tracking camera and world camera
-		odometry : RecordingDevice instance
-			Odometry recording device & settings
 		gps : RecordingDevice instance
 			GPS recording device & settings
 		"""
@@ -46,7 +44,7 @@ class RecordingSystem(MappedClass):
 		self.eye_right = eye_right
 		self.tracking_camera = tracking_camera
 		self.tilt_angle = tilt_angle
-		self.odometry = odometry
+		self.rig_version = rig_version
 		self.gps = gps
 		self._dbobjects_loaded = all([isinstance(x, MappedClass) for x in [self.world_camera, self.eye_left, self.eye_right, self.tracking_camera]]) # later: all([isinstance(self.getattr(x), MappedClass) for x in self._db_fields])
 		self._id = _id
@@ -56,7 +54,7 @@ class RecordingSystem(MappedClass):
 		# Constructed on the fly and not saved to docdict
 		self._temp_fields = []
 		# Fields that are other database objects
-		self._db_fields = ['world_camera', 'eye_left', 'eye_right', 'tracking_camera', 'odometry'] #, 'gps']
+		self._db_fields = ['world_camera', 'eye_left', 'eye_right', 'tracking_camera'] #, 'gps']
 	def __repr__(self):
 		if not self._dbobjects_loaded:
 			try:
@@ -70,6 +68,8 @@ class RecordingSystem(MappedClass):
 				{t:>16s}: {tracking} - {t_uid}
 				{e0:>16s}: {eye_right} - {e0_uid}
 				{e1:>16s}: {eye_left} - {e1_uid}
+				{a:>16s}: {tilt}
+				{r:>16s}: {rig_version}
 				""")[1:] # 1: to get rid of initial newline
 			rstr = rstr.format(
 				tag=self.tag,
@@ -85,6 +85,10 @@ class RecordingSystem(MappedClass):
 				e1='eye_left', 
 				eye_left=self.eye_left.tag,
 				e1_uid=self.eye_left.device_uid,
+				a='tilt',
+				tilt=self.tilt_angle,
+				r='rig_version',
+				rig_version=self.rig_version,
 				)
 			return rstr
 		except:

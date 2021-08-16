@@ -134,7 +134,7 @@ class MappedClass(object):
 		return d
 
 	def _get_stripped_docdict(self):
-		dd = self.get_docdict()
+		dd = self._get_docdict()
 		for key in ['fname', 'path', '_id', '_rev']:
 			if key in dd:
 				dd[key] = None

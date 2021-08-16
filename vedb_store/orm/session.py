@@ -165,6 +165,7 @@ class Session(MappedClass):
 				durations.append(stream_time)
 			self._recording_duration = np.min(durations)
 		return self._recording_duration
+		
 	@property
 	def datetime(self):
 		dt = datetime.datetime.strptime(self.date, '%Y_%m_%d_%H_%M_%S')
@@ -271,12 +272,18 @@ class Session(MappedClass):
 			if db_save:
 				print("Extant subjects w/ same subject_id:")
 				other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
-				print(other_subjects)
+				print([x.docdict for x in other_subjects])
 				print("This subject:")
 				print(subject.docdict)
-				yn = input("Save subject? (y/n):")
-				if yn.lower() in ['y', 't', '1']:
+				yn = input("Save subject? (0-n, save one of above; y, save this subject, q, quit):")
+				if yn.lower() in ['y',]:
 					subject = subject.save()
+				elif yn.lower() in '01234':
+					subject = other_subjects[int(yn)]
+				elif yn.lower() in ['q',]:
+					raise Exception("Manual quit")
+				else:
+					raise ValueError('Unknown value, quitting')
 		else:
 			print('Subject found in database!')
 
@@ -314,6 +321,8 @@ class Session(MappedClass):
 			# If camera doesn't exist, save camera
 			if this_camera._id is None:
 				# Camera is not in database; offer to save if db_save is True
+				if this_camera.device_uid  == 'None':
+					raise ValueError('Camera config file is broken for %s'%folder)
 				if db_save:
 					print("Extant cameras w/ same manufacturer:")
 					other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
@@ -339,7 +348,7 @@ class Session(MappedClass):
 		if os.path.exists(os.path.join(folder, 'gps.csv')):
 			gps = 'phone'
 		else:
-			gps = None
+			gps = 'None'
 
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
@@ -349,6 +358,12 @@ class Session(MappedClass):
 											gps=gps, # UNDEFINED TO DO
 											dbi=dbinterface,
 											)
+		if recording_system.tilt_angle == 'unknown':
+			print("ERROR why unknown")
+			recording_system.tilt_angle = 100
+		else:
+			recording_system.tilt_angle = int(recording_system.tilt_angle)
+
 		# query for recording system in database
 		if dbinterface is not None:
 			recording_system = recording_system.db_fill(allow_multiple=False)
@@ -356,20 +371,21 @@ class Session(MappedClass):
 			# Recording system is not in database; give option to save it.
 			if db_save:
 				print("Extant recording systems:")
-				other_systems = dbinterface.query(type='RecordingSystem')
+				other_systems = dbinterface.query(type='RecordingSystem', 
+					world_camera=cameras['world']._id) # Include only recording systems with this world camera
 				print(other_systems)
 				print("This recording system:")
-				print(recording_system.docdict)
+				print(recording_system)
 				yn = input("Save recording_system? (y/n):")
 				if yn.lower() in ['y', 't','1']:
 					default_tag = 'vedb_standard'
 					if recording_system.tilt_angle != 'unknown':
-						default_tag = '_'.join([default_tag, '%d'%int(recording_system.tilt_angle)])
+						default_tag = '_'.join([default_tag, '%d'%recording_system.tilt_angle])
 					tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
 					recording_system.tag = tag
 					recording_system = recording_system.save()
 		else:
-			print('RecordingSystem found in database!')		
+			print('RecordingSystem found in database!')
 		
 		# Define recording device, w/ tag
 		params = dict((sf, metadata[sf]) for sf in SESSION_FIELDS)
