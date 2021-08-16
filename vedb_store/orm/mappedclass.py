@@ -107,7 +107,7 @@ class MappedClass(object):
 				warnings.warn('No sync dir found ({})'.format(path_out))
 				path_out = os.path.expanduser(path)
 		else:
-			path_out = os.path.expanduser(self.path)
+			path_out = os.path.expanduser(path)
 		return path_out
 
 	def _get_docdict(self, rm_fields=()):
