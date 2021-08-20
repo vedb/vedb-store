@@ -239,7 +239,7 @@ class Session(MappedClass):
 		yaml_file = os.path.join(folder, 'config.yaml')
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
-		yaml_doc = yaml.load(open(yaml_file, mode='r'))
+		yaml_doc = yaml.load(open(yaml_file, mode='r', loader=yaml.SafeLoader))
 		# Get participant info if present
 		participant_file = os.path.join(folder, 'user_info.csv')
 		metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
