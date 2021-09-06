@@ -61,12 +61,13 @@ class Session(MappedClass):
 		self._paths = None
 		self._features = None
 		self._start_time = start_time
+		self._world_time = None
 		self._recording_duration = recording_duration
 		# Introspection
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []
 		# Constructed on the fly and not saved to docdict
-		self._temp_fields = ['paths', 'features', 'datetime']
+		self._temp_fields = ['paths', 'features', 'datetime', 'world_time']
 		# Fields that are other database objects
 		self._db_fields = ['recording_system', 'subject']
 
@@ -152,6 +153,12 @@ class Session(MappedClass):
 		return self._start_time
 
 	@property
+	def world_time(self):
+		if self._world_time is None:
+			self._world_time = np.load(self.paths['world_camera'][0]) - self.start_time
+		return self._world_time
+		
+	@property
 	def recording_duration(self):
 		"""Duration of recording in seconds"""
 		if self._recording_duration is None:
@@ -216,7 +223,7 @@ class Session(MappedClass):
 
 		"""
 		ob = cls.__new__(cls)
-		print('\n>>> Importing folder %s'%folder)
+		print('\n>>> Importing folder %s\n'%folder)
 		# Crop '/' from end of folder if exists
 		if folder[-1] == os.path.sep:
 			folder = folder[:-1]
@@ -239,7 +246,7 @@ class Session(MappedClass):
 		yaml_file = os.path.join(folder, 'config.yaml')
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
-		yaml_doc = yaml.load(open(yaml_file, mode='r', loader=yaml.SafeLoader))
+		yaml_doc = yaml.load(open(yaml_file, mode='r'), Loader=yaml.SafeLoader)
 		# Get participant info if present
 		participant_file = os.path.join(folder, 'user_info.csv')
 		metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
@@ -393,7 +400,6 @@ class Session(MappedClass):
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
 		params['recording_system'] = recording_system
-		print(params)
 
 		ob.__init__(dbi=dbinterface, **params)
 		# Temporarily set base directory to local base directory
