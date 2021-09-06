@@ -405,14 +405,18 @@ class Session(MappedClass):
 		rstr = textwrap.dedent("""
 			vedb_store.Session
 			{d:>12s}: {date}
+			{t:>12s}: {duration}
 			{ss:>12s}: {study_site}/{experimenter_id}
 			{r:>12s}: {recording_system}
 			{i:>12s}: {instruction}
 			{sc:>12s}: {scene}
+
 			""")
 		return rstr.format(
 			d='date', 
 			date=self.date,
+			t='tot. time:',
+			duration='%d min, %.1fsec'%(self.recording_duration // 60, self.recording_duration % 60),
 			ss='collected by', 
 			study_site=self.study_site, 
 			experimenter_id=self.experimenter_id,
