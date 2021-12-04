@@ -40,6 +40,7 @@ class Session(MappedClass):
 			recording_duration=None, 
 			recording_system=None, 
 			start_time=None, 
+			vetted=None,
 			type='Session', 
 			dbi=None, 
 			_id=None, 
@@ -133,6 +134,13 @@ class Session(MappedClass):
 				dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
 			return tt_clip, dd
 
+	def get_video_handle(self, stream):
+		"""Return an opencv """
+		return file_io.VideoCapture(self.paths[stream][1])
+	
+	def get_video_time(self, stream):
+		return np.load(self.paths[stream][0])
+
 	@property
 	def start_time(self):
 		if self._start_time is None:
@@ -179,6 +187,13 @@ class Session(MappedClass):
 		return dt
 	
 	@property
+	def path(self):
+		if self.vetted:
+			return os.path.join(self._base_path, 'raw', self.folder)
+		else:
+			return os.path.join(self._base_path, 'staging', self.folder)
+		
+	@property
 	def paths(self):
 		if self._paths is None:
 			to_find = ['world.mp4', 'eye0.mp4', 'eye1.mp4', 't265.mp4', 'odometry.pldata', 'gps.csv'] # more?
@@ -186,9 +201,9 @@ class Session(MappedClass):
 			_paths = {}
 			for fnm, nm in zip(to_find, names):
 				tt, ee = os.path.splitext(fnm)
-				data_path = os.path.join(self._base_path, self.folder, fnm)
+				data_path = os.path.join(self.path, fnm)
 				data_path = self._resolve_sync_dir(data_path)
-				timestamp_path = os.path.join(self._base_path, self.folder, tt + '_timestamps.npy')
+				timestamp_path = os.path.join(self.path, tt + '_timestamps.npy')
 				timestamp_path = self._resolve_sync_dir(timestamp_path)
 				if os.path.exists(data_path):
 					_paths[nm] = (timestamp_path, data_path)
