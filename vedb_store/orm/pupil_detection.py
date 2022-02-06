@@ -82,7 +82,7 @@ class PupilDetection(MappedClass):
 		if doc._id is None:
 			doc._id = self.dbi.get_uuid()
 		if not os.path.exists(self.path):
-			gaze_path = os.path.join(BASE_PATH, 'processed', 'gaze')
+			gaze_path = os.path.join(BASE_PATH, 'gaze')
 			if not os.path.exists(gaze_path):
 				raise ValueError(f"Base path for processed gaze ({gaze_path}) not found!")
 			else:

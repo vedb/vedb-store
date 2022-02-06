@@ -68,7 +68,7 @@ class Session(MappedClass):
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []
 		# Constructed on the fly and not saved to docdict
-		self._temp_fields = ['paths', 'features', 'datetime', 'world_time']
+		self._temp_fields = ['path', 'paths', 'features', 'datetime', 'world_time']
 		# Fields that are other database objects
 		self._db_fields = ['recording_system', 'subject']
 
@@ -218,7 +218,7 @@ class Session(MappedClass):
 		return self._features
 
 	@classmethod
-	def from_folder(cls, folder, dbinterface=None, raise_error=True, db_save=False, overwrite_yaml=False):
+	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=None, vetted=False, db_save=False, overwrite_yaml=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		
 		Parameters
@@ -242,13 +242,13 @@ class Session(MappedClass):
 		# Crop '/' from end of folder if exists
 		if folder[-1] == os.path.sep:
 			folder = folder[:-1]
-		base_dir, folder_toplevel = os.path.split(folder)
+		current_parent_directory, folder_toplevel = os.path.split(folder)
 		# Catch relative path, make into absolute path
 		if folder_toplevel == '':
-			folder_toplevel = base_dir
-			base_dir = ''
-		if (len(base_dir) == 0) or (base_dir[0] != '/'):
-			base_dir = os.path.abspath(os.path.join(os.path.curdir, base_dir))
+			folder_toplevel = current_parent_directory
+			current_parent_directory = ''
+		if (len(current_parent_directory) == 0) or (current_parent_directory[0] != '/'):
+			current_parent_directory = os.path.abspath(os.path.join(os.path.curdir, current_parent_directory))
 		# Check for presence of folder in database if we are aiming to save session in database
 		if db_save:
 			check = dbinterface.query(type='Session', folder=folder_toplevel)
@@ -415,11 +415,20 @@ class Session(MappedClass):
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
 		params['recording_system'] = recording_system
+		params['vetted'] = vetted
 
 		ob.__init__(dbi=dbinterface, **params)
 		# Temporarily set base directory to local base directory
 		# This is a bit fraught.
-		ob._base_path = base_dir
+		if move_to is None:
+			ob._base_path = BASE_PATH
+		elif move_to is False:
+			ob._base_path = current_parent_directory
+		else:
+			ob._base_path = move_to
+		if ob.path != current_parent_directory:
+			print("Moving files to %s..."%ob.path)
+			print("(Actually doing nothing, fix this if move is needed)")
 		return ob
 
 	def __repr__(self):

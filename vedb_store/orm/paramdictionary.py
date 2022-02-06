@@ -9,10 +9,10 @@ from ..utils import _is_numeric
 import os
 
 
-class ParamDict(MappedClass): 
+class ParamDictionary(MappedClass): 
     """Class representation of a feature space computed of a stimulus 
     """
-    def __init__(self, type='ParamDict', fn=None, data_fields=None, tag='default_params', 
+    def __init__(self, type='ParamDictionary', fn=None, data_fields=None, tag='default_params', 
                  dbi=None, path=None, fname=None, _id=None, _rev=None, **params):
         """Class for parameter dictionary. Loads to/from database. 
 
@@ -25,7 +25,7 @@ class ParamDict(MappedClass):
 
         """
         # Internalize all inputs
-        self.type = 'ParamDict' 
+        self.type = 'ParamDictionary' 
         # Flags
         self._dbobjects_loaded = False
         self._data_loaded = False
@@ -63,7 +63,7 @@ class ParamDict(MappedClass):
         # Cull data fields from param dict
         d = dict(_id=self._id,
                  _rev=self._rev,
-                 type='ParamDict',
+                 type='ParamDictionary',
                  tag=self.tag,
                  fn=self.fn,
                  data_fields=self.data_fields,
@@ -119,7 +119,7 @@ class ParamDict(MappedClass):
         if self._id is None:
             self._id = self.dbi.get_uuid()
 
-        return super(ParamDict, self).save(sdir=sdir, is_overwrite=is_overwrite, data_folder='Parameters')
+        return super(ParamDictionary, self).save(sdir=sdir, is_overwrite=is_overwrite, data_folder='Parameters')
 
 
     @property
@@ -130,13 +130,13 @@ class ParamDict(MappedClass):
     @classmethod
     def get_options(cls, fn, dbi):
         function_name = '.'.join([fn.__module__, fn.__name__])
-        pds = dbi.query(type='ParamDict', fn=function_name)
+        pds = dbi.query(type='ParamDictionary', fn=function_name)
         return sorted([p.tag for p in pds])
 
 
     ### ---- Housekeeping --- ###
     def __repr__(self):
-        nm = '<vedb_store.ParamDict>\n'
+        nm = '<vedb_store.ParamDictionary>\n'
         keys = ['fn', 'tag', 'params', 'path', 'fname', '_id', '_rev']
         args = ()
         for k in keys:
