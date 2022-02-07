@@ -99,7 +99,7 @@ class MarkerDetection(MappedClass):
 		self.db_load()
 		if self._fname is None:
 			if not np.any([x is None for x in [self._id, self.detection_params, self.marker_type]]):
-				epoch_str = 'all' if self.epoch_bytype is None else '%02d'%self.epoch_bytype
+				epoch_str = 'all' if ((self.epoch_bytype is None) or (self.epoch_bytype == 'all')) else '%02d'%self.epoch_bytype
 				self._fname = 'markers-{}-{}-{}-epoch{}-{}.npz'.format(
 					self.marker_type,
 					self.detection_params.fn.split('.')[-1], 
