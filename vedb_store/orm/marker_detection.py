@@ -14,6 +14,7 @@ class MarkerDetection(MappedClass):
 				detection_params=None,
 				epoch_params=None,
 				epoch_bytype=None,
+				failed=None,
 				#epoch_overall=None, # TO DO.
 				fname=None, 
 				tag=None, 
