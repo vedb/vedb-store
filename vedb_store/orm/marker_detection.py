@@ -74,6 +74,10 @@ class MarkerDetection(MappedClass):
 		# Assure path, _id
 		if doc._id is None:
 			doc._id = self.dbi.get_uuid()
+		# Make sure path exists
+		if not os.path.exists(doc.path):
+			os.mkdir(doc.path)
+		# Save
 		np.savez(doc.fpath, **self.data)
 		# Save header info to database
 		self.dbi.put_document(doc.docdict)
