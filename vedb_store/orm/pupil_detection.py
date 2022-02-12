@@ -22,6 +22,7 @@ class PupilDetection(MappedClass):
 				data=None, 
 				session=None, 
 				eye=None,
+				failed=None,
 				fname=None, 
 				params=None, 
 				tag=None, 
