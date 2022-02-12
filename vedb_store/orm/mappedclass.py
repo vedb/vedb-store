@@ -252,9 +252,9 @@ class MappedClass(object):
 				pass
 			else:
 				print('Deleting %s'%self.fpath)
-				if not fio.fexists(self.path, self.fname):
+				if not fio.fexists(self.fpath):
 					raise Exception("Path to real file not found")
-				fio.delete(self.path, self.fname)
+				fio.delete(self.fpath)
 		else:
 			raise Exception("Path to real file not found!")
 		doc = self.dbi.db[self._id]
