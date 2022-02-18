@@ -1,4 +1,4 @@
-# General database class for all vm_tools
+# General database class for all vedb_store objects
 import os
 import six
 import json
@@ -88,10 +88,10 @@ class MappedClass(object):
 		else:
 			return None
 
-	@property
-	def _fname(self):
-		"""Default fname, overwrite in child classes if you want a real file name (e.g. <_id>.hdf)"""
-		return None
+	# @property
+	# def _fname(self):
+	# 	"""Default fname, overwrite in child classes if you want a real file name (e.g. <_id>.hdf)"""
+	# 	return None
 
 	def _resolve_sync_dir(self, path):
 		# Deal with sync path
@@ -104,7 +104,10 @@ class MappedClass(object):
 			path_out = os.path.expanduser(path_out)
 			# Make sure it's present
 			if not os.path.exists(path_out):
-				warnings.warn('No sync dir found ({})'.format(path_out))
+				# This has proven really annoying, silencing. 
+				# Best to do with some flag, but that's too complicated
+				# for now.
+				#warnings.warn('No sync dir found ({})'.format(path_out))
 				path_out = os.path.expanduser(path)
 		else:
 			path_out = os.path.expanduser(path)
@@ -236,7 +239,7 @@ class MappedClass(object):
 		if doc._id is None:
 			doc._id = self.dbi.get_uuid()
 		if len(self.datadict) > 0:
-			fio.save_arrays(doc.path, doc.fname, meta=doc.docdict, **self.datadict)
+			fio.save_arrays(doc.fpath, meta=doc.docdict, **self.datadict)
 		# Save header info to database
 		self.dbi.put_document(doc.docdict)
 		return doc
@@ -249,9 +252,9 @@ class MappedClass(object):
 				pass
 			else:
 				print('Deleting %s'%self.fpath)
-				if not fio.fexists(self.path, self.fname):
+				if not fio.fexists(self.fpath):
 					raise Exception("Path to real file not found")
-				fio.delete(self.path, self.fname)
+				fio.delete(self.fpath)
 		else:
 			raise Exception("Path to real file not found!")
 		doc = self.dbi.db[self._id]

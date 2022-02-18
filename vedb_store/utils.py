@@ -246,3 +246,171 @@ def parse_sensorstream_gps(fname, sub_type):
 
 	return tt, out
 
+
+def dictlist_to_arraydict(dictlist):
+    """Convert from pupil format list of dicts to dict of arrays"""
+    dict_fields = list(dictlist[0].keys())
+    out = {}
+    for df in dict_fields:
+        out[df] = np.array([d[df] for d in dictlist])
+    return out
+
+
+def arraydict_to_dictlist(arraydict):
+    """Convert from dict of arrays to pupil format list of dicts"""
+    dict_fields = list(arraydict.keys())
+    first_key = dict_fields[0]
+    n = len(arraydict[first_key])
+    out = []
+    for j in range(n):
+        frame_dict = {}
+        for k in dict_fields:
+            value = arraydict[k][j]
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
+            frame_dict[k] = value
+        out.append(frame_dict)
+    return out
+
+
+mapping_pupil_to_df = {'eye_id': 'id',
+                       'norm_pos_y': ('norm_pos', 1),
+                       'norm_pos_x': ('norm_pos', 0),
+                       'location_x': ('location', 0),
+                       'location_y': ('location', 1),
+                       'ellipse_center_x': ('ellipse', 'center', 0),
+                       'ellipse_center_y': ('ellipse', 'center', 1),
+                       'ellipse_axis_a': ('ellipse', 'axes', 0),
+                       'ellipse_axis_b': ('ellipse', 'axes', 1),
+                       'ellipse_angle': ('ellipse', 'angle'),
+                       }
+
+mapping_marker_to_df = {'eye_id': 'id',
+                       'norm_pos_y': ('norm_pos', 1),
+                       'norm_pos_x': ('norm_pos', 0),
+                       'location_x': ('location', 0),
+                       'location_y': ('location', 1),
+                       'ellipse_center_x': ('ellipse', 'center', 0),
+                       'ellipse_center_y': ('ellipse', 'center', 1),
+                       'ellipse_axis_a': ('ellipse', 'axes', 0),
+                       'ellipse_axis_b': ('ellipse', 'axes', 1),
+                       'ellipse_angle': ('ellipse', 'angle'),
+                       }
+
+mapping_df_to_pupil = {'id': 'eye_id',
+                       'norm_pos': ('norm_pos_x', 'norm_pos_y'),
+                       'location': ('location_x', 'location_y'),
+                       'ellipse': {'axes': ('ellipse_axis_a', 'ellipe_axis_b'),
+                                   'angle': 'ellipse_angle',
+                                   'center': ('ellipse_center_x', 'ellipse_center_y'),
+                                   }
+                       }
+
+mapping_marker_to_df = {'norm_pos_y': ('norm_pos', 1),
+                        'norm_pos_x': ('norm_pos', 0),
+                        'location_x': ('location', 0),
+                        'location_y': ('location', 1),
+                        'ellipse_center_x': ('ellipse', 'center', 0),
+                        'ellipse_center_y': ('ellipse', 'center', 1),
+                        'ellipse_axis_a': ('ellipse', 'axes', 0),
+                        'ellipse_axis_b': ('ellipse', 'axes', 1),
+                        'ellipse_angle': ('ellipse', 'angle'),
+                        }
+
+
+def dataframe_to_dictlist(dataframe, mapping=mapping_df_to_pupil):
+    """Convert a dataframe to a list of dictionaries"""
+    dictlist = []
+    for index, row in dataframe.iterrows():
+        tmp = {}
+        for new_value, old_value in mapping.items():
+            if isinstance(old_value, tuple):
+                tmp[new_value] = [row[v] for v in old_value]
+            elif isinstance(old_value, dict):
+                sub_dict = {}
+                for nv, ov in old_value.items():
+                    if isinstance(ov, tuple):
+                        sub_dict[nv] = [row[v] for v in ov]
+                    else:
+                        sub_dict[nv] = row[ov]
+                tmp[new_value] = sub_dict
+            elif isinstance(old_value, str):
+                tmp[old_value] = row[new_value]
+        dictlist.append(tmp)
+    return dictlist
+
+
+def dataframe_to_arraydict(dataframe, mapping=mapping_df_to_pupil):
+    """Convert from dataframe to dict of arrays"""
+    dictlist = dataframe_to_dictlist(dataframe, mapping=mapping)
+    arraydict = dictlist_to_arraydict(dictlist)
+    return arraydict
+
+
+def arraydict_to_dataframe(arraydict, mapping=mapping_pupil_to_df):
+    """Convert from dict of arrays to a dataframe
+    
+    Parameters
+    ----------
+    """
+    if mapping is not None:
+        dictlist = arraydict_to_dictlist(arraydict)
+        new_dictlist = remap_dict_values(dictlist, mapping=mapping)
+        new_arraydict = dictlist_to_arraydict(new_dictlist)
+    else:
+        new_arraydict = arraydict
+    df = pd.DataFrame(data=new_arraydict)
+    return df
+
+
+def remap_dict_values(dictlist, mapping=mapping_pupil_to_df):
+    """Change values stored in each dictionary in a list of dicts
+    
+    For example, map a 2-tuple for 'location' to 'location_x' and 'location_y' keys
+    in a new dictionary
+
+    Parameters
+    ----------
+    dictlist : list
+        list of dictionaries to have keys & values remapped
+    mapping: dict
+        dictionary governing mapping keys and values from one dict to anther
+    
+    """
+    if mapping is None:
+        mapping = {}
+    new_dictlist = []
+    for dd in dictlist:
+        new_dict = {}
+        to_remove = []
+        for new_value, old_value in mapping.items():
+            if isinstance(old_value, tuple):
+                n = len(old_value)
+                if n == 2:
+                    a, b = old_value
+                    to_remove.append(a)
+                    new_dict[new_value] = dd[a][b]
+                elif n == 3:
+                    a, b, c = old_value
+                    to_remove.append(a)
+                    new_dict[new_value] = dd[a][b][c]
+            else:
+                to_remove.append(v)
+                new_dict[new_value] = dd[old_value]
+        for x in to_remove:
+            if x in dd:
+                _ = dd.pop(x)
+        new_dict.update(**dd)
+        new_dictlist.append(new_dict)
+    return new_dictlist
+
+
+def dictlist_to_dataframe(dictlist, mapping=mapping_pupil_to_df):
+    new_arraydict = dictlist_to_arraydict(new_dictlist)
+    df = pd.DataFrame(data=new_arraydict)
+    return df
+
+
+def _is_numeric(obj):
+    attrs = ['__add__', '__sub__', '__mul__', '__truediv__', '__pow__']
+    return all(hasattr(obj, attr) for attr in attrs)

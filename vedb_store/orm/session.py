@@ -40,6 +40,7 @@ class Session(MappedClass):
 			recording_duration=None, 
 			recording_system=None, 
 			start_time=None, 
+			vetted=None,
 			type='Session', 
 			dbi=None, 
 			_id=None, 
@@ -61,12 +62,13 @@ class Session(MappedClass):
 		self._paths = None
 		self._features = None
 		self._start_time = start_time
+		self._world_time = None
 		self._recording_duration = recording_duration
 		# Introspection
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []
 		# Constructed on the fly and not saved to docdict
-		self._temp_fields = ['paths', 'features', 'datetime']
+		self._temp_fields = ['path', 'paths', 'features', 'datetime', 'world_time']
 		# Fields that are other database objects
 		self._db_fields = ['recording_system', 'subject']
 
@@ -132,6 +134,13 @@ class Session(MappedClass):
 				dd = file_io.load_array(df, idx=(st_i, fin_i), **kwargs)
 			return tt_clip, dd
 
+	def get_video_handle(self, stream):
+		"""Return an opencv """
+		return file_io.VideoCapture(self.paths[stream][1])
+	
+	def get_video_time(self, stream):
+		return np.load(self.paths[stream][0])
+
 	@property
 	def start_time(self):
 		if self._start_time is None:
@@ -151,6 +160,12 @@ class Session(MappedClass):
 			self._start_time = np.min(starts)
 		return self._start_time
 
+	@property
+	def world_time(self):
+		if self._world_time is None:
+			self._world_time = np.load(self.paths['world_camera'][0]) - self.start_time
+		return self._world_time
+		
 	@property
 	def recording_duration(self):
 		"""Duration of recording in seconds"""
@@ -172,6 +187,13 @@ class Session(MappedClass):
 		return dt
 	
 	@property
+	def path(self):
+		if self.vetted:
+			return os.path.join(self._base_path, 'raw', self.folder)
+		else:
+			return os.path.join(self._base_path, 'staging', self.folder)
+		
+	@property
 	def paths(self):
 		if self._paths is None:
 			to_find = ['world.mp4', 'eye0.mp4', 'eye1.mp4', 't265.mp4', 'odometry.pldata', 'gps.csv'] # more?
@@ -179,9 +201,9 @@ class Session(MappedClass):
 			_paths = {}
 			for fnm, nm in zip(to_find, names):
 				tt, ee = os.path.splitext(fnm)
-				data_path = os.path.join(self._base_path, self.folder, fnm)
+				data_path = os.path.join(self.path, fnm)
 				data_path = self._resolve_sync_dir(data_path)
-				timestamp_path = os.path.join(self._base_path, self.folder, tt + '_timestamps.npy')
+				timestamp_path = os.path.join(self.path, tt + '_timestamps.npy')
 				timestamp_path = self._resolve_sync_dir(timestamp_path)
 				if os.path.exists(data_path):
 					_paths[nm] = (timestamp_path, data_path)
@@ -196,7 +218,7 @@ class Session(MappedClass):
 		return self._features
 
 	@classmethod
-	def from_folder(cls, folder, dbinterface=None, raise_error=True, db_save=False, overwrite_yaml=False):
+	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=None, vetted=False, db_save=False, overwrite_yaml=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		
 		Parameters
@@ -216,17 +238,17 @@ class Session(MappedClass):
 
 		"""
 		ob = cls.__new__(cls)
-		print('\n>>> Importing folder %s'%folder)
+		print('\n>>> Importing folder %s\n'%folder)
 		# Crop '/' from end of folder if exists
 		if folder[-1] == os.path.sep:
 			folder = folder[:-1]
-		base_dir, folder_toplevel = os.path.split(folder)
+		current_parent_directory, folder_toplevel = os.path.split(folder)
 		# Catch relative path, make into absolute path
 		if folder_toplevel == '':
-			folder_toplevel = base_dir
-			base_dir = ''
-		if (len(base_dir) == 0) or (base_dir[0] != '/'):
-			base_dir = os.path.abspath(os.path.join(os.path.curdir, base_dir))
+			folder_toplevel = current_parent_directory
+			current_parent_directory = ''
+		if (len(current_parent_directory) == 0) or (current_parent_directory[0] != '/'):
+			current_parent_directory = os.path.abspath(os.path.join(os.path.curdir, current_parent_directory))
 		# Check for presence of folder in database if we are aiming to save session in database
 		if db_save:
 			check = dbinterface.query(type='Session', folder=folder_toplevel)
@@ -239,7 +261,7 @@ class Session(MappedClass):
 		yaml_file = os.path.join(folder, 'config.yaml')
 		if not os.path.exists(yaml_file):
 			raise ValueError('yaml file not found!')
-		yaml_doc = yaml.load(open(yaml_file, mode='r'))
+		yaml_doc = yaml.load(open(yaml_file, mode='r'), Loader=yaml.SafeLoader)
 		# Get participant info if present
 		participant_file = os.path.join(folder, 'user_info.csv')
 		metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
@@ -393,26 +415,38 @@ class Session(MappedClass):
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
 		params['recording_system'] = recording_system
-		print(params)
+		params['vetted'] = vetted
 
 		ob.__init__(dbi=dbinterface, **params)
 		# Temporarily set base directory to local base directory
 		# This is a bit fraught.
-		ob._base_path = base_dir
+		if move_to is None:
+			ob._base_path = BASE_PATH
+		elif move_to is False:
+			ob._base_path = current_parent_directory
+		else:
+			ob._base_path = move_to
+		if ob.path != current_parent_directory:
+			print("Moving files to %s..."%ob.path)
+			print("(Actually doing nothing, fix this if move is needed)")
 		return ob
 
 	def __repr__(self):
 		rstr = textwrap.dedent("""
 			vedb_store.Session
 			{d:>12s}: {date}
+			{t:>12s}: {duration}
 			{ss:>12s}: {study_site}/{experimenter_id}
 			{r:>12s}: {recording_system}
 			{i:>12s}: {instruction}
 			{sc:>12s}: {scene}
+
 			""")
 		return rstr.format(
 			d='date', 
 			date=self.date,
+			t='tot. time:',
+			duration='%d min, %.1fsec'%(self.recording_duration // 60, self.recording_duration % 60),
 			ss='collected by', 
 			study_site=self.study_site, 
 			experimenter_id=self.experimenter_id,
