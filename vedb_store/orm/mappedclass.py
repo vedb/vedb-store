@@ -166,17 +166,17 @@ class MappedClass(object):
 				pass
 			else:
 				raise ValueError("You have a value in one of fields that is expected to be a db class that is NOT a dbclass or an ID or anything sensible. Noodle brain.")
-			if dbf=='mask':
-				if isinstance(v, (list, tuple)):
-					# Combine multiple masks by and-ing together
-					v = reduce(lambda x, y:x*y, v)
 			setattr(self, dbf, v)
 		if recursive:
 			for dbf in self._db_fields:
 				if self[dbf] is None:
 					# Allow missing database fields
 					continue
-				self[dbf].db_load(recursive=recursive)
+				if isinstance(self[dbf], (list, tuple)):
+					for item in self[dbf]:
+						item.db_load(recursive=recursive)
+				else:
+					self[dbf].db_load(recursive=recursive)
 		self._dbobjects_loaded = True
 
 	def db_fill(self, skip_fields=('date_run', 'last_updated'), allow_multiple=False):

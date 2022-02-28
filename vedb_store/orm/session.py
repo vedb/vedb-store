@@ -12,17 +12,40 @@ import numpy as np
 import yaml
 import os
 
-from ..utils import parse_sensorstream_gps, parse_vedb_metadata, SUBJECT_FIELDS, SESSION_FIELDS
+from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, SUBJECT_FIELDS, SESSION_FIELDS
 
 BASE_PATH = options.config.get('paths', 'vedb_directory')
 
+REQUIRED_FILES = [
+	'accel.pldata',
+	'accel_timestamps.npy',
+	'config.yaml',
+	'eye0.mp4',
+	'eye0.pldata',
+	'eye0_timestamps.npy',
+	'eye1.mp4',
+	'eye1.pldata',
+	'eye1_timestamps.npy',
+	'gyro.pldata',
+	'gyro_timestamps.npy',
+	'odometry.pldata',
+	'odometry_timestamps.npy',
+	't265.mp4',
+	't265.pldata',
+	't265_timestamps.npy',
+	'user_info.csv',
+	'vedc.record.log',
+	'world.mp4',
+	'world.pldata',
+	'world_timestamps.npy',
+	]
 
-# Question: track data_available in database? 
-# For feature extraction: there may be multiple versions and/or parameters that we would like to use to compute stuff. 
-# e.g. for gaze data. How to track that?
-# Separate database class for processed session, w/ param dicts and preprocessing sequences? 
-
-# dbi field - need it, yes?
+REQUIRED_SOON_FILES = [
+	't265_left.extrinsics',
+	't265_right.extrinsics',
+	'world.extrinsics',
+	'world.intrinsics',
+	]
 
 class Session(MappedClass):
 	def __init__(self, 
@@ -196,7 +219,7 @@ class Session(MappedClass):
 	@property
 	def paths(self):
 		if self._paths is None:
-			to_find = ['world.mp4', 'eye0.mp4', 'eye1.mp4', 't265.mp4', 'odometry.pldata', 'gps.csv'] # more?
+			to_find = ['world.mp4', 'eye1.mp4', 'eye0.mp4', 't265.mp4', 'odometry.pldata', 'gps.csv'] # more?
 			names = ['world_camera', 'eye_left', 'eye_right', 'tracking_camera', 'odometry', 'gps']
 			_paths = {}
 			for fnm, nm in zip(to_find, names):
@@ -238,7 +261,7 @@ class Session(MappedClass):
 
 		"""
 		ob = cls.__new__(cls)
-		print('\n>>> Importing folder %s\n'%folder)
+		print('\n>>> Importing folder %s'%folder)
 		# Crop '/' from end of folder if exists
 		if folder[-1] == os.path.sep:
 			folder = folder[:-1]
@@ -249,6 +272,14 @@ class Session(MappedClass):
 			current_parent_directory = ''
 		if (len(current_parent_directory) == 0) or (current_parent_directory[0] != '/'):
 			current_parent_directory = os.path.abspath(os.path.join(os.path.curdir, current_parent_directory))
+		# Check on files first
+		file_check = os.listdir(os.path.join(current_parent_directory, folder_toplevel))
+		missing_files = set(REQUIRED_FILES) - set(file_check)
+		error_text = ''
+		if len(missing_files) > 0:
+			error_text = 'Missing files: {}\n'.format(missing_files)
+		if 'config.yaml' in missing_files:
+			raise ValueError(error_text)
 		# Check for presence of folder in database if we are aiming to save session in database
 		if db_save:
 			check = dbinterface.query(type='Session', folder=folder_toplevel)
@@ -259,12 +290,22 @@ class Session(MappedClass):
 				raise Exception('More than one database session found with this date!')				
 		# Look for meta-data in folder
 		yaml_file = os.path.join(folder, 'config.yaml')
-		if not os.path.exists(yaml_file):
-			raise ValueError('yaml file not found!')
 		yaml_doc = yaml.load(open(yaml_file, mode='r'), Loader=yaml.SafeLoader)
 		# Get participant info if present
 		participant_file = os.path.join(folder, 'user_info.csv')
-		metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
+		if os.path.exists(participant_file):
+			user_info = parse_user_info(participant_file)
+			if 'experimenter_id' in user_info:
+				print("    Collected by %s"%user_info['experimenter_id'])
+			else:
+				print("    Collected by UNKNOWN")
+		try:
+			metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
+		except ValueError as err:
+			# Catch error and add to above:
+			error_text = '\n'.join([error_text, err.args[0]])
+		if error_text != '':
+			raise ValueError(error_text)
 		# Set date	(& be explicit about what constitutes date)	
 		session_date = folder_toplevel
 		try:
@@ -367,24 +408,14 @@ class Session(MappedClass):
 				print('%s camera found in database!'%camera_label)
 			cameras[camera_label] = this_camera
 
-		if os.path.exists(os.path.join(folder, 'gps.csv')):
-			gps = 'phone'
-		else:
-			gps = 'None'
-
 		recording_system = RecordingSystem(world_camera=cameras['world'],
 											eye_left=cameras['eye_left'],
 											eye_right=cameras['eye_right'],
 											tracking_camera=cameras['tracking'],
 											tilt_angle=metadata['tilt_angle'],
-											gps=gps, # UNDEFINED TO DO
+											rig_version=metadata['rig_version'],
 											dbi=dbinterface,
 											)
-		if recording_system.tilt_angle == 'unknown':
-			print("ERROR why unknown")
-			recording_system.tilt_angle = 100
-		else:
-			recording_system.tilt_angle = int(recording_system.tilt_angle)
 
 		# query for recording system in database
 		if dbinterface is not None:
@@ -400,9 +431,7 @@ class Session(MappedClass):
 				print(recording_system)
 				yn = input("Save recording_system? (y/n):")
 				if yn.lower() in ['y', 't','1']:
-					default_tag = 'vedb_standard'
-					if recording_system.tilt_angle != 'unknown':
-						default_tag = '_'.join([default_tag, '%d'%recording_system.tilt_angle])
+					default_tag = 'vedb_standard_%d'%recording_system.tilt_angle
 					tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
 					recording_system.tag = tag
 					recording_system = recording_system.save()
