@@ -13,7 +13,7 @@ class MarkerDetection(MappedClass):
 				marker_type=None,
 				detection_params=None,
 				epoch_params=None,
-				epoch_bytype=None,
+				epoch=None,
 				failed=None,
 				#epoch_overall=None, # TO DO.
 				fname=None, 
@@ -24,7 +24,7 @@ class MarkerDetection(MappedClass):
 		"""Detected markers for a session"""
 		inpt = locals()
 		self.type = 'MarkerDetection'
-		computed_defaults = ['data', 'fname', ] # 'epoch_bytype'] # , 'epoch_overall']
+		computed_defaults = ['data', 'fname', ] # , 'epoch_overall']
 		for k, v in inpt.items():
 			if k in computed_defaults:
 				setattr(self, '_' + k, v)
@@ -104,7 +104,7 @@ class MarkerDetection(MappedClass):
 		self.db_load()
 		if self._fname is None:
 			if not np.any([x is None for x in [self._id, self.detection_params, self.marker_type]]):
-				epoch_str = 'all' if ((self.epoch_bytype is None) or (self.epoch_bytype == 'all')) else '%02d'%self.epoch_bytype
+				epoch_str = 'all' if ((self.epoch is None) or (self.epoch == 'all')) else '%02d'%self.epoch
 				self._fname = 'markers-{}-{}-{}-epoch{}-{}.npz'.format(
 					self.marker_type,
 					self.detection_params.fn.split('.')[-1], 
@@ -129,7 +129,7 @@ class MarkerDetection(MappedClass):
 	# this for later. 
 
 	# @property
-	# def epoch_bytype(self):
+	# def epoch_overall(self):
 	# 	self.db_load()
 	# 	if self.dbi is None:
 	# 		return None

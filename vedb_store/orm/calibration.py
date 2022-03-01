@@ -14,6 +14,7 @@ class Calibration(MappedClass):
 				pupil_detection=None, 
 				marker_detection=None, 
 				eye=None,
+				epoch=None,
 				failed=None,
                 params=None,
 				data=None,
