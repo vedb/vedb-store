@@ -1,5 +1,6 @@
 from .mappedclass import MappedClass
 from .. import options, utils
+import textwrap
 import numpy as np
 import copy
 import os
@@ -129,3 +130,21 @@ class PupilDetection(MappedClass):
 			if self.session is not None:
 				self._path = os.path.join(BASE_PATH, 'gaze', self.session.folder)
 		return self._path
+
+	def __repr__(self):
+		self.db_load()
+		rstr = textwrap.dedent("""
+			vedb_store.PupilDetection
+			{d:>12s}: {date}
+			{t:>12s}: {tag}
+			{e:>12s}: {eye}
+
+			""")
+		return rstr.format(
+                    d='date',
+                    date=self.session.folder,
+                    t='tag',
+                    tag=self.tag,
+                    e='eye',
+                    eye=self.eye,
+                )

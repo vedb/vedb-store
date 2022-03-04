@@ -164,6 +164,19 @@ class Session(MappedClass):
 	def get_video_time(self, stream):
 		return np.load(self.paths[stream][0])
 
+	def check_paths(self, check_type='comprehensive'):
+		file_check = os.listdir(self.path)
+		if check_type == 'comprehensive':
+			missing_files = list(set(REQUIRED_FILES) - set(file_check))
+		elif check_type == 'basic':
+			basics = ['eye0', 'eye1', 't265', 'world']
+			required_files = ['odometry.pldata', 'odometry_timestamps.npy']
+			for b in basics:
+				required_files.append(b + '.mp4')
+				required_files.append(b + '_timestamps.npy')
+			missing_files = list(set(required_files) - set(file_check))
+		return missing_files
+		
 	@property
 	def start_time(self):
 		if self._start_time is None:

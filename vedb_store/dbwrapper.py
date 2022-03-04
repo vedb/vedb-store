@@ -7,6 +7,7 @@ from .orm.paramdictionary import ParamDictionary
 from .orm.pupil_detection import PupilDetection
 from .orm.marker_detection import MarkerDetection
 from .orm.calibration import Calibration
+from .orm.gaze import Gaze
 
 try: 
 	import docdb_lite
@@ -24,6 +25,7 @@ try:
 		PupilDetection=PupilDetection,
 		MarkerDetection=MarkerDetection,
 		Calibration=Calibration,
+		Gaze=Gaze,
 		)
 except ImportError:
 	print("Could not initialize classes in docdb database")
