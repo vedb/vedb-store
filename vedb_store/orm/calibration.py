@@ -92,8 +92,8 @@ class Calibration(MappedClass):
 
 	@property
 	def fname(self):
-		self.db_load()
 		if self._fname is None:
+			self.db_load()
 			if not np.any([x is None for x in [self._id, self.params, self.eye]]):
 				self._fname = 'calibration-{}-{}-{}.npz'.format(
 					self.params.fn.split('.')[-1], 

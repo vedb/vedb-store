@@ -105,8 +105,8 @@ class Gaze(MappedClass):
 
 	@property
 	def fname(self):
-		self.db_load()
 		if self._fname is None:
+			self.db_load()
 			if not np.any([x is None for x in [self._id, self.params, self.eye]]):
 				self._fname = 'gaze-{}-{}-{}-{}.npz'.format(
 					self.eye,
@@ -132,6 +132,7 @@ class GazeError(MappedClass):
                 gaze=None,
                 marker_detection=None,
                 eye=None,
+				epoch=None,
                 failed=None,
                 fname=None,
                 params=None,
@@ -139,7 +140,7 @@ class GazeError(MappedClass):
                 dbi=None,
                 _id=None,
                 _rev=None):
-		"""Segment of data from a session"""
+		"""Error estimate for a given (usually validation) marker detection"""
 		inpt = locals()
 		self.type = 'GazeError'
 		computed_defaults = ['data', 'fname', 'path']
@@ -153,11 +154,9 @@ class GazeError(MappedClass):
 		# Will be written to self.fpath (if defined)
 		self._data_fields = ['data']
 		# Constructed on the fly and not saved to docdict
-		self._temp_fields = ['timestamp', 'path']
+		self._temp_fields = ['path']
 		# Fields that are other database objects
 		self._db_fields = ['session', 'params', 'gaze', 'marker_detection']
-		# Placeholder for computed timestamps
-		self._timestamp = None
 
 	def load(self, type='arraydict'):
 		"""Load labeled gaze points
@@ -176,6 +175,10 @@ class GazeError(MappedClass):
 		elif type == 'dictlist':
 			return utils.arraydict_to_dictlist(self.data)
 		elif type == 'dataframe':
+			raise NotImplementedError('Not yet!')
+			# Mapping is likely to be different than for other types for which
+			# mappings exist; look into this if this functionality is needed,
+			# may axe this option.
 			return utils.arraydict_to_dataframe(self.data, mapping=utils.mapping_pupil_to_df)
 
 	def save(self, is_overwrite=False):
@@ -205,13 +208,6 @@ class GazeError(MappedClass):
 		return doc
 
 	@property
-	def timestamp(self):
-		self.db_load()
-		if self._timestamp is None:
-			self._timestamp = self.data['timestamp'] - self.session.start_time
-		return self._timestamp
-
-	@property
 	def data(self):
 		if self._data is None:
 			if os.path.exists(self.fpath):
@@ -222,11 +218,12 @@ class GazeError(MappedClass):
 
 	@property
 	def fname(self):
-		self.db_load()
 		if self._fname is None:
+			self.db_load()
 			if not np.any([x is None for x in [self._id, self.params, self.eye]]):
-				self._fname = 'gaze_error-{}-{}-{}-{}.npz'.format(
+				self._fname = 'gaze_error-{}-epoch{:02d}-{}-{}-{}.npz'.format(
 					self.eye,
+					self.epoch,
 					self.params.fn.split('.')[-1],
 					self.params.tag,
 					self._id)

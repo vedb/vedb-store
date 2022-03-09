@@ -135,7 +135,7 @@ def parse_user_info(fname):
 		return {}
 	with open(fname) as fid:
 		lines = fid.readlines()
-		out = dict(tuple([y.strip() for y in x.split(',')]) for x in lines)
+		out = dict(tuple([y.strip().strip("'").strip('"') for y in x.split(',')]) for x in lines)
 		for k in out.keys():
 			if k in ['IPD']:
 				try:
