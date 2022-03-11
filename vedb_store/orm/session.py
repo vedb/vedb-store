@@ -12,7 +12,7 @@ import numpy as np
 import yaml
 import os
 
-from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, SUBJECT_FIELDS, SESSION_FIELDS
+from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, get_frame_indices, SUBJECT_FIELDS, SESSION_FIELDS
 
 BASE_PATH = options.config.get('paths', 'vedb_directory')
 
@@ -137,10 +137,12 @@ class Session(MappedClass):
 			tt = np.load(tf) - self.start_time
 			if time_idx is not None:
 				st, fin = time_idx
-				ti = (tt > st) & (tt < fin)
-				tt_clip = tt[ti]
-				indices, = np.nonzero(ti)
-				st_i, fin_i = indices[0], indices[-1]+1
+				#ti = (tt > st) & (tt < fin)
+				#tt_clip = tt[ti]
+				#indices, = np.nonzero(ti)
+				#st_i, fin_i = indices[0], indices[-1]+1
+				st_i, fin_i = get_frame_indices(st, fin, tt)
+				tt_clip = tt[st_i:fin_i]
 			elif frame_idx is not None:
 				st_i, fin_i = frame_idx
 				tt_clip = tt[st_i:fin_i]
@@ -163,6 +165,10 @@ class Session(MappedClass):
 	
 	def get_video_time(self, stream):
 		return np.load(self.paths[stream][0])
+
+	def get_frame_indices(self, start_time, end_time, stream='world_camera'):
+		all_time = self.get_video_time(stream) - self.start_time
+		return get_frame_indices(start_time, end_time, all_time)
 
 	def check_paths(self, check_type='comprehensive'):
 		file_check = os.listdir(self.path)
