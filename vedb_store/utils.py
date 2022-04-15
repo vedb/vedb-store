@@ -3,6 +3,7 @@ from . import options
 from collections import OrderedDict
 import pathlib
 import numpy as np
+import warnings
 import yaml
 
 
@@ -10,15 +11,18 @@ SESSION_FIELDS = ['study_site',
 					'experimenter_id',
 					'lighting',
 					'scene',
-					'weather',
-					'instruction',]
+					'instruction',
+					]
 SUBJECT_FIELDS = ['subject_id',
 					'age',
 					'gender',
 					'ethnicity',
 					'IPD',
-					'height',]
-RECORDING_FIELDS = ['tilt_angle',]
+					'height',
+					]
+RECORDING_FIELDS = ['tilt_angle',
+					'rig_version',
+					]
 
 def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=False):
 	"""Extract metadata data from yaml file, filling in missing fields
@@ -44,8 +48,9 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 	# Assure yaml_file is a pathlib.Path
 	yaml_file = pathlib.Path(yaml_file)
 	with open(yaml_file, mode='r') as fid:
-		yaml_doc = yaml.load(fid)
+		yaml_doc = yaml.safe_load(fid)
 	required_fields = SESSION_FIELDS + SUBJECT_FIELDS + RECORDING_FIELDS
+	allowable_missing = ['IPD', 'rig_version', 'instruction'] # Temporarily...
 	if 'metadata' in yaml_doc:
 		# Current version, good.
 		metadata = yaml_doc['metadata']
@@ -58,7 +63,7 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 		metadata = None
 	if metadata is None:
 		if raise_error:
-			raise ValueError("Missing metadata in yaml file in folder.")
+			raise ValueError("Missing metadata: no yaml file in folder.")
 		else:
 			metadata = {}
 	user_info = parse_user_info(participant_file)
@@ -68,29 +73,42 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 	missing_fields = list(set(required_fields) - set(metadata_keys))
 	if len(missing_fields) > 0:
 		if raise_error: 
-			raise ValueError('Missing fields: {}'.format(missing_fields))
+			# TEMP allow flexibility with rig and IPD, we will crack down on this later
+			for mf in allowable_missing:
+				if mf in missing_fields:
+					metadata[mf] = 'unknown'
+					warnings.warn(f"Missing '{mf}' for subject; consider collecting!")
+					_ = missing_fields.pop(missing_fields.index(mf))
+			if len(missing_fields) > 0:
+				raise ValueError('Missing fields in subject meta-data: {}'.format(missing_fields))
 		else:
-			# Fill in missing fields
+			# Fill in missing fields manually
 			print('Missing fields: ', missing_fields)
 			for mf in missing_fields:
 				if (mf in SUBJECT_FIELDS):
-					default = 'None'
+					default = 'None'						
 				elif mf == 'tilt_angle':
 					default = '100'
 				else:
 					default = 'unknown'
-
 				value = input("Enter value for %s [press enter for '%s', type 'abort' to quit]"%(mf, default)) or default
 				if value.lower() in ('abort' "'abort'"):
 					raise Exception('Manual quit.')
-				elif value.lower() in ('none'):
-					value = None
-				if mf in ('tilt_angle',):
-					value = int(value)
-				elif mf in ('age', 'height'):
-					if value is not None and value not in ('unknown', 'None'):
-						value = int(value)
 				metadata[mf] = value
+		# Assure values are of proper types
+		for key in metadata.keys():
+			value = metadata[key]
+			if isinstance(value, str) and value.lower() in ('none'):
+				value = None
+			if key in ('tilt_angle',):
+				value = int(value)
+			elif key in ('age', 'height'):
+				if value is not None and value not in ('unknown', 'None'):
+					value = int(value)
+			elif key in ('rig_version'):
+				if value is not None and value not in ('unknown', 'None'):
+					value = float(value)
+			metadata[key] = value
 		if overwrite_yaml:
 			# Optionally replace yaml file with new one
 			if metadata_location == 'base':
@@ -117,7 +135,7 @@ def parse_user_info(fname):
 		return {}
 	with open(fname) as fid:
 		lines = fid.readlines()
-		out = dict(tuple([y.strip() for y in x.split(',')]) for x in lines)
+		out = dict(tuple([y.strip().strip("'").strip('"') for y in x.split(',')]) for x in lines)
 		for k in out.keys():
 			if k in ['IPD']:
 				try:
@@ -414,3 +432,47 @@ def dictlist_to_dataframe(dictlist, mapping=mapping_pupil_to_df):
 def _is_numeric(obj):
     attrs = ['__add__', '__sub__', '__mul__', '__truediv__', '__pow__']
     return all(hasattr(obj, attr) for attr in attrs)
+
+
+def get_function(function_name):
+    """Load a function to a variable by name
+
+    Parameters
+    ----------
+    function_name : str
+        string name for function (including module)
+    """
+    import importlib
+    fn_path = function_name.split('.')
+    module_name = '.'.join(fn_path[:-1])
+    fn_name = fn_path[-1]
+    module = importlib.import_module(module_name)
+    func = getattr(module, fn_name)
+    return func
+
+
+def get_nearest_index(timestamp, all_time):
+	pass
+
+def get_frame_indices(start_time, end_time, all_time):
+	"""Finds start and end indices for frames that are between `start_time` and `end_time`
+	
+	Note that `end_frame` returned will be the first frame that occurs after
+	end_time, such that some data[start_frame:end_frame] will span the range 
+	between `start_time` and `end_time`. 
+
+	Parameters
+	----------
+	start_time: scalar
+		time after which to select frames
+	end_time: scalar
+		time before which to select frames
+	all_time: array-like
+		full array of timestamps for data into which to index.
+
+	"""
+	ti = (all_time > start_time) & (all_time < end_time)
+	time_clipped = all_time[ti]
+	indices, = np.nonzero(ti)
+	start_frame, end_frame = indices[0], indices[-1] + 1
+	return start_frame, end_frame 

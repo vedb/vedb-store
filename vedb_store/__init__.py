@@ -6,6 +6,8 @@ from .orm.subject import Subject
 from .orm.paramdictionary import ParamDictionary
 from .orm.pupil_detection import PupilDetection
 from .orm.marker_detection import MarkerDetection
+from .orm.calibration import Calibration
+from .orm.gaze import Gaze, GazeError
 
 from functools import partial
 
