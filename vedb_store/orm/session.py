@@ -58,6 +58,7 @@ class Session(MappedClass):
 			scene=None, 
 			folder=None, 
 			lighting=None, 
+			indoor_outdoor=None,
 			weather=None, 
 			data_available=None,
 			recording_duration=None, 
@@ -67,7 +68,8 @@ class Session(MappedClass):
 			type='Session', 
 			dbi=None, 
 			_id=None, 
-			_rev=None):
+			_rev=None,
+			**kwargs):
 		"""Class for a data collection session for vedb project
 		start_time : float
 			Start time is the common start time for all clocks. Necessary for syncronization of disparate 
@@ -78,8 +80,15 @@ class Session(MappedClass):
 
 		inpt = locals()
 		self.type = 'Session'
+		if len(kwargs) > 0:
+			warnings.warn(('Database has been updated, you very likely need to update\n'
+						   'your vedb-store code in order to use the new database\n'
+						   '(`git pull` and `python setup.py install`, please! '))
+			for k, v in kwargs.items():
+				print(f'Provisionally setting attribute {k}; this may be a bad idea!')
+				setattr(self, k, v)
 		for k, v in inpt.items():
-			if not k in ['self', 'type', 'start_time', 'recording_duration']:
+			if not k in ['self', 'type', 'start_time', 'recording_duration','kwargs']:
 				setattr(self, k, v)
 		self._base_path = BASE_PATH
 		self._paths = None
