@@ -1,5 +1,6 @@
 from .mappedclass import MappedClass
 from .. import options, utils
+import textwrap
 import numpy as np
 import os
 
@@ -120,6 +121,22 @@ class MarkerDetection(MappedClass):
 			if self.session is not None:
 				self._path = os.path.join(BASE_PATH, 'gaze', self.session.folder)
 		return self._path
+	def __repr__(self):
+		self.db_load()
+		rstr = textwrap.dedent("""
+			vedb_store.MarkerDetection
+			{d:>12s}: {date}
+			{t:>12s}: {tag}
+			{e:>12s}: {epoch}
+			""")
+		return rstr.format(
+                    d='session',
+                    date=self.session.folder,
+                    t='tag',
+                    tag=self.tag,
+                    e='epoch',
+                    epoch=self.epoch,
+                )
 
 	# Complication: We'd like to compute overall order of marker epochs, 
 	# regardless of calibration / validation (the two can be used 

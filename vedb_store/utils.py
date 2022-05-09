@@ -24,7 +24,7 @@ RECORDING_FIELDS = ['tilt_angle',
 					'rig_version',
 					]
 
-def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=False):
+def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=False, dbi=None):
 	"""Extract metadata data from yaml file, filling in missing fields
 
 	Optionally backs up original file and creates a new file with filled-in fields
@@ -51,6 +51,7 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 		yaml_doc = yaml.safe_load(fid)
 	required_fields = SESSION_FIELDS + SUBJECT_FIELDS + RECORDING_FIELDS
 	allowable_missing = ['IPD', 'rig_version', 'instruction'] # Temporarily...
+	# Get metadata from config; contains camera info, potentially more
 	if 'metadata' in yaml_doc:
 		# Current version, good.
 		metadata = yaml_doc['metadata']
@@ -61,16 +62,42 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 		metadata_location = 'commands/record'
 	else: 
 		metadata = None
+	# Require metadata to be present in some form
 	if metadata is None:
 		if raise_error:
 			raise ValueError("Missing metadata: no yaml file in folder.")
 		else:
 			metadata = {}
+	# Update metadata with user info. For recent sesions, this contains subject-
+	# specific demographics as well as tilt angle, instruction, etc.
 	user_info = parse_user_info(participant_file)
 	metadata.update(user_info)
 	metadata_keys = list(metadata.keys())
+	# Clean data to get rid of empty fields
 	metadata_keys = [k for k in metadata_keys if (metadata[k] is not None) and metadata[k] != '']
+	# Identify missing fields
 	missing_fields = list(set(required_fields) - set(metadata_keys))
+
+	### WORKING BELOW HERE
+	
+	# If database is provided, try to fill in subject information
+	this_participant = dict((k, metadata.pop(k)) for k in SUBJECT_FIELDS)
+	cleaned_participant = clean_participant(this_participant)
+	if dbi is not None:
+		# Identify new subjects here? Throw an error or ask for in put if unknown subject? 
+		chk = dbi.query(**cleaned_participant)
+		if len(chk) == 1:
+			_ = chk.pop('_id')
+			_ = chk.pop('_rev')
+			cleaned_participant = chk
+		elif len(chk) > 1:
+			raise ValueError('Subject info provided matches multiple subjects in database!')
+		elif len(chk) == 0:
+			pass
+	metadata.update(**cleaned_participant)
+
+	### WORKING ABOVE HERE
+
 	if len(missing_fields) > 0:
 		if raise_error: 
 			# TEMP allow flexibility with rig and IPD, we will crack down on this later
@@ -149,6 +176,32 @@ def parse_user_info(fname):
 					out[k] = None
 	_ = out.pop('key')
 	return out
+
+def clean_participant(participant_dict):
+	"""Clean up values in participant dictionary to have standard values"""
+	swaps = dict(
+		# Gender
+		f='female',
+	    m='male',
+		#w='white',
+		#caucasian='white',
+		)
+	cm_per_inch = 2.54
+	# General updates
+	to_update = {}
+	for k, v in participant_dict.items():
+		if v.lower() in swaps:
+			to_update[k] = swaps[v.lower()]
+	participant_dict.update(to_update)
+	# One-offs
+	if ('height' in participant_dict) and participant_dict['height'] > 100:
+		participant_dict['height'] = int(np.round(participant_dict['height'] / cm_per_inch))
+	if 'age' in participant_dict:
+		# Warn & get rid of it
+		warnings.warn('Use of "age" as a demographic field is deprecated in favor of "birth_year"\nPlease update your ved-capture install!')
+		_ = participant_dict.pop('age')
+	return participant_dict
+
 
 ### --- GPS parsing --- ###
 syntax = OrderedDict(**{

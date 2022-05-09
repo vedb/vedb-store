@@ -138,10 +138,9 @@ class PupilDetection(MappedClass):
 			{d:>12s}: {date}
 			{t:>12s}: {tag}
 			{e:>12s}: {eye}
-
 			""")
 		return rstr.format(
-                    d='date',
+                    d='session',
                     date=self.session.folder,
                     t='tag',
                     tag=self.tag,
