@@ -5,6 +5,7 @@ import pathlib
 import numpy as np
 import warnings
 import yaml
+import os
 
 
 SESSION_FIELDS = ['study_site',
@@ -14,13 +15,14 @@ SESSION_FIELDS = ['study_site',
 					'instruction',
 					]
 SUBJECT_FIELDS = ['subject_id',
-					'age',
+					'birth_year',
 					'gender',
 					'ethnicity',
 					'IPD',
 					'height',
 					]
 RECORDING_FIELDS = ['tilt_angle',
+					'lens',
 					'rig_version',
 					]
 
@@ -264,6 +266,36 @@ def parse_sensorstream_gps(fname, sub_type):
 
 	return tt, out
 
+
+def specify_calibration_validation_epochs(folder, fps=30, write_to_folder=True):
+	ordinals = ['first', 'second', 'third', 'fourth', 'fifth', 'too many']
+	timestamps = np.load(os.path.join(folder, 'world_timestamps.npy'))
+	marker_type = ['calibration', 'validation']
+	markers = {}
+	for mk in marker_type:
+		markers[mk + '_orig_times'] = []
+		for count in ordinals:
+			print("\n=== %s %s epoch ==="%(count.capitalize(), mk))
+			minsec_str = input('Please enter start of epoch as `min,sec` : ')
+			min_start, sec_start = [float(x) for x in minsec_str.split(',')]
+			minsec_str = input('Please enter end of epoch as `min,sec` : ')
+			min_end, sec_end = [float(x) for x in minsec_str.split(',')]
+			markers[mk + '_orig_times'].append([min_start *
+			                                   60 + sec_start, min_end * 60 + sec_end])
+			quit = input('Enter additional %s? (y/n): '%mk)
+			if quit[0].lower() == 'n':
+				break
+		mka = np.array(markers[mk + '_orig_times']).astype(int)
+		markers[mk + '_frames'] = [[int(a), int(b)] for (a, b) in mka * fps]
+		markers[mk + '_times'] = [[int(np.floor(a)), int(np.ceil(b))] for (a, b) in timestamps[mka * fps]]
+	if write_to_folder:
+		yaml_file = pathlib.Path(folder) / 'marker_times.yaml'
+		if yaml_file.exists():
+			raise ValueError('File %s already exists! Please rename or remove it if you wish to overwrite.'%(str(yaml_file)))
+		else:
+			with open(yaml_file, mode='w') as fid:
+				yaml.dump(markers, fid)
+	return markers
 
 def dictlist_to_arraydict(dictlist):
     """Convert from pupil format list of dicts to dict of arrays"""

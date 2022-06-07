@@ -19,8 +19,8 @@ BASE_PATH = options.config.get('paths', 'vedb_directory')
 # dbi field - need it, yes?
 
 class Subject(MappedClass):
-	def __init__(self, subject_id=None, age=None, gender=None, ethnicity=None, IPD=None, height=None,
-		type='Subject', dbi=None, _id=None, _rev=None):
+	def __init__(self, subject_id=None, birth_year=None, gender=None, ethnicity=None, IPD=None, height=None,
+		type='Subject', dbi=None, age=None, _id=None, _rev=None):
 		"""Class for a data collection session for vedb project
 		start_time : float
 			Start time is the common start time for all clocks. Necessary for syncronization of disparate 
@@ -32,8 +32,11 @@ class Subject(MappedClass):
 		inpt = locals()
 		self.type = 'Subject'
 		for k, v in inpt.items():
+			if k == 'age':
+				print("`age` field is deprecated; use `birth_year` instead!")
 			if not k in ['self', 'type']:
 				setattr(self, k, v)
+			
 		# Introspection
 		# Will be written to self.fpath (if defined)
 		self._data_fields = []

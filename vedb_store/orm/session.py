@@ -48,6 +48,11 @@ REQUIRED_SOON_FILES = [
 	]
 
 class Session(MappedClass):
+	"""Representation of a VEDB recording session.
+	
+	Contains paths to all relevant files (world video, eye videos, etc.)
+	and means to load them, as well as meta-data about the session.
+	"""
 	def __init__(self, 
 			subject=None, 
 			experimenter_id=None, 
