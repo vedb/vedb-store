@@ -267,7 +267,7 @@ def parse_sensorstream_gps(fname, sub_type):
 	return tt, out
 
 
-def specify_calibration_validation_epochs(folder, fps=30, write_to_folder=True):
+def specify_marker_epochs(folder, fps=30, write_to_folder=True):
 	ordinals = ['first', 'second', 'third', 'fourth', 'fifth', 'too many']
 	timestamps = np.load(os.path.join(folder, 'world_timestamps.npy'))
 	marker_type = ['calibration', 'validation']
