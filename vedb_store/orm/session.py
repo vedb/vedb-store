@@ -244,10 +244,13 @@ class Session(MappedClass):
 	
 	@property
 	def path(self):
-		if self.vetted:
-			return os.path.join(self._base_path, 'raw', self.folder)
+		if self._path is None:
+			if self.vetted:
+				self._path = os.path.join(self._base_path, 'raw', self.folder)
+			else:
+				self._path = os.path.join(self._base_path, 'staging', self.folder)
 		else:
-			return os.path.join(self._base_path, 'staging', self.folder)
+			return self._path
 		
 	@property
 	def paths(self):
@@ -274,7 +277,7 @@ class Session(MappedClass):
 		return self._features
 
 	@classmethod
-	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=None, vetted=False, db_save=False, overwrite_yaml=False):
+	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=False, vetted=False, db_save=False, overwrite_yaml=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		
 		Parameters
@@ -483,14 +486,18 @@ class Session(MappedClass):
 		# Temporarily set base directory to local base directory
 		# This is a bit fraught.
 		if move_to is None:
-			ob._base_path = BASE_PATH
+			ob._path = None
 		elif move_to is False:
-			ob._base_path = current_parent_directory
+			print('Setting _path to:')
+			fdir = os.path.join(current_parent_directory, folder_toplevel)
+			print(fdir)
+			ob._path = fdir
 		else:
-			ob._base_path = move_to
+			ob._path = move_to
 		if ob.path != current_parent_directory:
-			print("Moving files to %s..."%ob.path)
-			print("(Actually doing nothing, fix this if move is needed)")
+			pass
+			#print("Moving files to %s..."%ob.path)
+			#print("(Actually doing nothing, fix this if move is needed)")
 		return ob
 
 	def __repr__(self):

@@ -49,6 +49,7 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 	"""
 	# Assure yaml_file is a pathlib.Path
 	yaml_file = pathlib.Path(yaml_file)
+	participant_file = pathlib.Path(participant_file)
 	with open(yaml_file, mode='r') as fid:
 		yaml_doc = yaml.safe_load(fid)
 	required_fields = SESSION_FIELDS + SUBJECT_FIELDS + RECORDING_FIELDS
@@ -113,20 +114,20 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 			metadata[key] = value
 		if overwrite_yaml:
 			# Optionally replace yaml file with new one
-			if metadata_location == 'base':
-				yaml_doc['metadata'] = metadata
-			elif metadata_location == 'commands/record':
-				yaml_doc['commands']['record']['metadata'] = metadata			
-			new_yaml_file = yaml_file.parent / 'config_orig.yaml'
-			if new_yaml_file.exists():
-				# Get rid of new one, original is already saved
-				yaml_file.unlink()			
+			#if metadata_location == 'base':
+			#	yaml_doc['metadata'] = metadata
+			#elif metadata_location == 'commands/record':
+			#	yaml_doc['commands']['record']['metadata'] = metadata			
+			new_participant_file = participant_file.parent / 'user_info_orig.yaml'
+			if new_participant_file.exists():
+				# Get rid of current one, original is already saved
+				participant_file.unlink()			
 			else:
 				# Create backup
-				print('copying to %s'%new_yaml_file)
-				yaml_file.rename(new_yaml_file)			
-			with open(yaml_file, mode='w') as fid:
-				yaml.dump(yaml_doc, fid)
+				print('copying to %s'%new_participant_file)
+				participant_file.rename(new_participant_file)			
+			with open(participant_file, mode='w') as fid:
+				yaml.dump(metadata, fid)
 	return metadata
 
 
