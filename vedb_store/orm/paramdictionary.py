@@ -72,9 +72,9 @@ class ParamDictionary(MappedClass):
         
         no_value = [k for k in d.keys() if (getattr(self, k) is None) or (getattr(self, k)==[])]
         d = dict((k, v) for k, v in d.items() if not k in no_value)
-        # Skip parameter values that are None (??)
-        no_value_pp = [k for k in self.params.keys() if self.params[k] is None]
-        skip_fields = self._data_fields + no_value_pp + list(rm_fields)
+        # Skip parameter values that are None (??) -> Changed to allow this
+        #no_value_pp = [k for k in self.params.keys() if self.params[k] is None]
+        skip_fields = self._data_fields + list(rm_fields) #+ no_value_pp
         pp = dict((k, v) for k, v in self.params.items() if not k in skip_fields)
         d.update(**pp) 
         d = json.loads(json.dumps(d))

@@ -96,6 +96,7 @@ class Session(MappedClass):
 			if not k in ['self', 'type', 'start_time', 'recording_duration','kwargs']:
 				setattr(self, k, v)
 		self._base_path = BASE_PATH
+		self._path = None
 		self._paths = None
 		self._features = None
 		self._start_time = start_time
@@ -277,7 +278,7 @@ class Session(MappedClass):
 		return self._features
 
 	@classmethod
-	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=False, vetted=False, db_save=False, overwrite_yaml=False):
+	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=False, vetted=False, db_save=False, overwrite_user_info=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		
 		Parameters
@@ -289,7 +290,7 @@ class Session(MappedClass):
 		raise_error : bool
 			Whether to raise an error if fields are missing. True simply raises an error, 
 			False allows manual input of missing fields. 
-		overwrite_yaml : bool
+		overwrite_user_info : bool
 			Whether to create a new yaml file. Old yaml file will be saved as `config_orig.yaml`
 			unless that file already exists (in which case no backup will be created - only
 			original is backed up)
@@ -336,7 +337,7 @@ class Session(MappedClass):
 			else:
 				print("    Collected by UNKNOWN")
 		try:
-			metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_yaml=overwrite_yaml)
+			metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_user_info=overwrite_user_info)
 		except ValueError as err:
 			# Catch error and add to above:
 			error_text = '\n'.join([error_text, err.args[0]])

@@ -26,7 +26,7 @@ RECORDING_FIELDS = ['tilt_angle',
 					'rig_version',
 					]
 
-def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_yaml=False):
+def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_user_info=False):
 	"""Extract metadata data from yaml file, filling in missing fields
 
 	Optionally backs up original file and creates a new file with filled-in fields
@@ -41,8 +41,8 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 	raise_error : bool
 		Whether to raise an error if fields are missing. True simply raises an error, 
 		False allows manual input of missing fields. 
-	overwrite_yaml : bool
-		Whether to create a new yaml file. Old yaml file will be saved as `config_orig.yaml`
+	overwrite_user_info : bool
+		Whether to create a new user info file. Old user file will be saved as `user_info_orig.csv`
 		unless that file already exists (in which case no backup will be created - only
 		original is backed up)
 
@@ -105,20 +105,16 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 				value = None
 			if key in ('tilt_angle',):
 				value = int(value)
-			elif key in ('age', 'height'):
+			elif key in ('age', 'height', 'birth_year'):
 				if value is not None and value not in ('unknown', 'None'):
 					value = int(value)
 			elif key in ('rig_version'):
 				if value is not None and value not in ('unknown', 'None'):
 					value = float(value)
 			metadata[key] = value
-		if overwrite_yaml:
-			# Optionally replace yaml file with new one
-			#if metadata_location == 'base':
-			#	yaml_doc['metadata'] = metadata
-			#elif metadata_location == 'commands/record':
-			#	yaml_doc['commands']['record']['metadata'] = metadata			
-			new_participant_file = participant_file.parent / 'user_info_orig.yaml'
+		if overwrite_user_info:
+			# Optionally replace user info file with new one
+			new_participant_file = participant_file.parent / 'user_info_orig.csv'
 			if new_participant_file.exists():
 				# Get rid of current one, original is already saved
 				participant_file.unlink()			
@@ -126,8 +122,7 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 				# Create backup
 				print('copying to %s'%new_participant_file)
 				participant_file.rename(new_participant_file)			
-			with open(participant_file, mode='w') as fid:
-				yaml.dump(metadata, fid)
+			write_user_info(participant_file, metadata)
 	return metadata
 
 
@@ -152,6 +147,17 @@ def parse_user_info(fname):
 					out[k] = None
 	_ = out.pop('key')
 	return out
+
+def write_user_info(fname, metadata):
+	"""Write user info (metadata) to file"""
+	with open(fname, mode='w') as fid:
+		fid.write('key,value\n')
+		for k, v in metadata.items():
+			if v is None:
+				vv = ''
+			else:
+				vv = v
+			fid.write(f'{k},{vv}\n')
 
 ### --- GPS parsing --- ###
 syntax = OrderedDict(**{
