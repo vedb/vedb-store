@@ -250,8 +250,7 @@ class Session(MappedClass):
 				self._path = os.path.join(self._base_path, 'raw', self.folder)
 			else:
 				self._path = os.path.join(self._base_path, 'staging', self.folder)
-		else:
-			return self._path
+		return self._path
 		
 	@property
 	def paths(self):
