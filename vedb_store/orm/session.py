@@ -10,6 +10,7 @@ import textwrap
 import pathlib
 import numpy as np
 import yaml
+import copy
 import os
 
 from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, get_frame_indices, SUBJECT_FIELDS, SESSION_FIELDS
@@ -54,6 +55,7 @@ class Session(MappedClass):
 	and means to load them, as well as meta-data about the session.
 	"""
 	def __init__(self, 
+			# Participant & experimenter
 			subject=None, 
 			experimenter_id=None, 
 			experiment=None,
@@ -62,15 +64,25 @@ class Session(MappedClass):
 			instruction=None, 
 			scene=None, 
 			folder=None, 
-			lighting=None, 
-			indoor_outdoor=None,
-			weather=None, 
+			lighting=None, # remove? 
+			indoor_outdoor=None, 
+			weather=None, # remove?
 			data_available=None,
 			recording_duration=None, 
-			recording_system=None, 
-			start_time=None, 
+            start_time=None,
+			recording_system=None, # remove
+			# Cameras & recording system info
+			world_camera=None,
+			tracking_camera=None,
+			eye_left=None,
+			eye_right=None,
+			tilt_angle=None,
+			rig_version=None,
+			lens=None,
+			# QC info
 			vetted=None,
-			type='Session', 
+			# Database bureaucracy
+              type='Session',
 			dbi=None, 
 			_id=None, 
 			_rev=None,
@@ -108,7 +120,13 @@ class Session(MappedClass):
 		# Constructed on the fly and not saved to docdict
 		self._temp_fields = ['path', 'paths', 'features', 'datetime', 'world_time']
 		# Fields that are other database objects
-		self._db_fields = ['recording_system', 'subject']
+		self._db_fields = ['recording_system', 
+			'subject',
+			'world_camera',
+			'tracking_camera',
+			'eye_left',
+			'eye_right',
+			]
 
 	def refresh(self):
 		"""Update list of available data to load from path. WIP."""
@@ -365,24 +383,38 @@ class Session(MappedClass):
 		# Check for exisistence of this subject
 		if dbinterface is not None:
 			subject = subject.db_fill(allow_multiple=False)
+			if subject._id is None:
+				print("Attempting secondary subject search")
+				reduced_params = copy.deepcopy(subject_params)
+				for k in ['age','ethnicity']:
+					if k in reduced_params:
+						reduced_params.pop(k)
+				try:
+					print(reduced_params)
+					subject = dbinterface.query(1, **reduced_params)
+				except:
+					pass
 		# If subject doesn't exist, save subject
 		if subject._id is None:
 			# Subject is not in database; display other subjects
 			if db_save:
-				print("Extant subjects w/ same subject_id:")
-				other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
-				print([x.docdict for x in other_subjects])
-				print("This subject:")
-				print(subject.docdict)
-				yn = input("Save subject? (0-n, save one of above; y, save this subject, q, quit):")
-				if yn.lower() in ['y',]:
-					subject = subject.save()
-				elif yn.lower() in '01234':
-					subject = other_subjects[int(yn)]
-				elif yn.lower() in ['q',]:
-					raise Exception("Manual quit")
+				if raise_error:
+					raise ValueError('Unknown subject ID or mismatched subject info - please import manually!')
 				else:
-					raise ValueError('Unknown value, quitting')
+					print("Extant subjects w/ same subject_id:")
+					other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+					print([x.docdict for x in other_subjects])
+					print("This subject:")
+					print(subject.docdict)
+					yn = input("Save subject? (0-n, save one of above; y, save this subject, q, quit):")
+					if yn.lower() in ['y',]:
+						subject = subject.save()
+					elif yn.lower() in '01234':
+						subject = other_subjects[int(yn)]
+					elif yn.lower() in ['q',]:
+						raise Exception("Manual quit")
+					else:
+						raise ValueError('Unknown value, quitting')
 		else:
 			print('Subject found in database!')
 
@@ -423,7 +455,9 @@ class Session(MappedClass):
 				if this_camera.device_uid  == 'None':
 					raise ValueError('Camera config file is broken for %s'%folder)
 				if db_save:
-					print("Extant cameras w/ same manufacturer:")
+					if raise_error:
+						raise ValueError("New camera or camera settings detected - session must be manually imported!")
+					print("New camera or camera settings detected!\nExtant cameras w/ same manufacturer:")
 					other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
 					print(other_cameras)
 					print("This camera:")
@@ -444,42 +478,53 @@ class Session(MappedClass):
 				print('%s camera found in database!'%camera_label)
 			cameras[camera_label] = this_camera
 
-		recording_system = RecordingSystem(world_camera=cameras['world'],
-											eye_left=cameras['eye_left'],
-											eye_right=cameras['eye_right'],
-											tracking_camera=cameras['tracking'],
-											tilt_angle=metadata['tilt_angle'],
-											rig_version=metadata['rig_version'],
-											dbi=dbinterface,
-											)
+		# recording_system = RecordingSystem(world_camera=cameras['world'],
+		# 									eye_left=cameras['eye_left'],
+		# 									eye_right=cameras['eye_right'],
+		# 									tracking_camera=cameras['tracking'],
+		# 									tilt_angle=metadata['tilt_angle'],
+		# 									rig_version=metadata['rig_version'],
+		# 									dbi=dbinterface,
+		# 									)
+
+		recording_system = dict(world_camera=cameras['world'],
+								eye_left=cameras['eye_left'],
+								eye_right=cameras['eye_right'],
+								tracking_camera=cameras['tracking'],
+								tilt_angle=metadata['tilt_angle'],
+								rig_version=metadata['rig_version'],
+								lens=metadata['lens'],
+								)
+
 
 		# query for recording system in database
-		if dbinterface is not None:
-			recording_system = recording_system.db_fill(allow_multiple=False)
-		if recording_system._id is None:
-			# Recording system is not in database; give option to save it.
-			if db_save:
-				print("Extant recording systems:")
-				other_systems = dbinterface.query(type='RecordingSystem', 
-					world_camera=cameras['world']._id) # Include only recording systems with this world camera
-				print(other_systems)
-				print("This recording system:")
-				print(recording_system)
-				yn = input("Save recording_system? (y/n):")
-				if yn.lower() in ['y', 't','1']:
-					default_tag = 'vedb_standard_%d'%recording_system.tilt_angle
-					tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
-					recording_system.tag = tag
-					recording_system = recording_system.save()
-		else:
-			print('RecordingSystem found in database!')
+		# if dbinterface is not None:
+		# 	recording_system = recording_system.db_fill(allow_multiple=False)
+		# if recording_system._id is None:
+		# 	# Recording system is not in database; give option to save it.
+		# 	if db_save:
+		# 		print("Extant recording systems:")
+		# 		other_systems = dbinterface.query(type='RecordingSystem', 
+		# 			world_camera=cameras['world']._id) # Include only recording systems with this world camera
+		# 		print(other_systems)
+		# 		print("This recording system:")
+		# 		print(recording_system)
+		# 		yn = input("Save recording_system? (y/n):")
+		# 		if yn.lower() in ['y', 't','1']:
+		# 			default_tag = 'vedb_standard_%d'%recording_system.tilt_angle
+		# 			tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
+		# 			recording_system.tag = tag
+		# 			recording_system = recording_system.save()
+		# else:
+		# 	print('RecordingSystem found in database!')
 		
 		# Define recording device, w/ tag
 		params = dict((sf, metadata[sf]) for sf in SESSION_FIELDS)
+		params.update(**recording_system)
 		params['subject'] = subject
 		params['folder'] = folder_toplevel
 		params['date'] = session_date
-		params['recording_system'] = recording_system
+		params['recording_system'] = None # remove me
 		params['vetted'] = vetted
 
 		ob.__init__(dbi=dbinterface, **params)
@@ -506,7 +551,6 @@ class Session(MappedClass):
 			{d:>12s}: {date}
 			{t:>12s}: {duration}
 			{ss:>12s}: {study_site}/{experimenter_id}
-			{r:>12s}: {recording_system}
 			{i:>12s}: {instruction}
 			{sc:>12s}: {scene}
 
@@ -519,8 +563,6 @@ class Session(MappedClass):
 			ss='collected by', 
 			study_site=self.study_site, 
 			experimenter_id=self.experimenter_id,
-			r='system', 
-			recording_system=self.recording_system.tag if isinstance(self.recording_system, MappedClass) else self.recording_system, 
 			i='instruction',
 			instruction=self.instruction,
 			sc='scene',

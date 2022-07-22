@@ -5,6 +5,7 @@ import pathlib
 import numpy as np
 import warnings
 import yaml
+import copy
 import os
 
 
@@ -26,7 +27,12 @@ RECORDING_FIELDS = ['tilt_angle',
 					'rig_version',
 					]
 
-def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_user_info=False):
+METADATA_DEFAULTS = dict(tilt_angle='100',
+						 lens='new',
+						 )
+METADATA_DEFAULTS.update(dict((field, 'None') for field in SUBJECT_FIELDS))
+
+def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_user_info=False, default_values=None):
 	"""Extract metadata data from yaml file, filling in missing fields
 
 	Optionally backs up original file and creates a new file with filled-in fields
@@ -50,10 +56,12 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 	# Assure yaml_file is a pathlib.Path
 	yaml_file = pathlib.Path(yaml_file)
 	participant_file = pathlib.Path(participant_file)
+	if default_values is None:
+		default_values = METADATA_DEFAULTS
 	with open(yaml_file, mode='r') as fid:
 		yaml_doc = yaml.safe_load(fid)
 	required_fields = SESSION_FIELDS + SUBJECT_FIELDS + RECORDING_FIELDS
-	allowable_missing = ['IPD', 'rig_version', 'instruction'] # Temporarily...
+	allowable_missing = ['IPD', 'rig_version', 'instruction', 'birth_year', 'lens', 'scene', 'ethnicity','height', 'gender'] # Temporarily...
 	if 'metadata' in yaml_doc:
 		# Current version, good.
 		metadata = yaml_doc['metadata']
@@ -76,10 +84,13 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 	missing_fields = list(set(required_fields) - set(metadata_keys))
 	if len(missing_fields) > 0:
 		if raise_error: 
-			# TEMP allow flexibility with rig and IPD, we will crack down on this later
+			# TEMP allow flexibility with some fields, we will crack down on this later
 			for mf in allowable_missing:
 				if mf in missing_fields:
-					metadata[mf] = 'unknown'
+					if mf in default_values:
+						metadata[mf] = default_values[mf]
+					else:
+						metadata[mf] = 'unknown'
 					warnings.warn(f"Missing '{mf}' for subject; consider collecting!")
 					_ = missing_fields.pop(missing_fields.index(mf))
 			if len(missing_fields) > 0:
@@ -88,10 +99,8 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 			# Fill in missing fields manually
 			print('Missing fields: ', missing_fields)
 			for mf in missing_fields:
-				if (mf in SUBJECT_FIELDS):
-					default = 'None'						
-				elif mf == 'tilt_angle':
-					default = '100'
+				if mf in default_values:
+					default = default_values[mf]
 				else:
 					default = 'unknown'
 				value = input("Enter value for %s [press enter for '%s', type 'abort' to quit]"%(mf, default)) or default
@@ -140,13 +149,41 @@ def parse_user_info(fname):
 					out[k] = float(out[k])
 				except ValueError:
 					out[k] = None
-			elif k in ['height', 'age']:
+			elif k in ['height', 'age', 'birth_year']:
 				try:
 					out[k] = int(out[k])
 				except ValueError:
 					out[k] = None
+			elif k in ['experimenter_id','subject_id']:
+				out[k] = out[k].upper()
+				# Oneoff bullshit
+				if out[k] == 'AFULLER':
+					out[k] = 'AF'
+				elif out[k] == 'NUDNOUIL':
+					out[k] = 'IN'
+			elif k in ['ethnicity', 'gender']:
+				out[k] = out[k].lower()
+			if k == 'gender':
+				if out[k] in ('f',):
+					out[k] = 'female'
+				elif out[k] in ('m',):
+					out[k] = 'male'
 	_ = out.pop('key')
 	return out
+
+
+
+# def standardize_metadata_fields(user_info):
+# 	"""Enforce some standardization on metadata fields"""
+# 	substitutions = dict(gender=dict(male=['m','man','male']),
+# 	for k, v in user_info.items():
+# 		this_value = v.lower().strip(' ').strip('"')
+# 		# height
+# 		if k=='height':
+# 			if "'" in v:
+# 				# height given in ft'in"
+
+# 			if v > 90:
 
 def write_user_info(fname, metadata):
 	"""Write user info (metadata) to file"""
