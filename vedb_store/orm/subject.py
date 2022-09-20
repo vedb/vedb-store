@@ -5,6 +5,7 @@ from .. import options
 import file_io
 import textwrap
 import numpy as np
+import warnings
 import yaml
 import os
 
@@ -33,7 +34,7 @@ class Subject(MappedClass):
 		self.type = 'Subject'
 		for k, v in inpt.items():
 			if k == 'age':
-				print("`age` field is deprecated; use `birth_year` instead!")
+				warnings.warn("`age` field is deprecated; use `birth_year` instead!")
 			if not k in ['self', 'type']:
 				setattr(self, k, v)
 			
