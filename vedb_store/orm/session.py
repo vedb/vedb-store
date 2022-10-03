@@ -13,7 +13,7 @@ import yaml
 import copy
 import os
 
-from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, get_frame_indices, SUBJECT_FIELDS, SESSION_FIELDS
+from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, get_frame_indices, SUBJECT_FIELDS, SESSION_FIELDS, load_pipeline_elements
 
 BASE_PATH = options.config.get('paths', 'vedb_directory')
 
@@ -132,6 +132,40 @@ class Session(MappedClass):
 		"""Update list of available data to load from path. WIP."""
 		pass
 	
+	def load_gaze_pipeline(self, pipeline='latest'):
+		"""load all elements of a gaze pipeline
+
+		Parameters
+		----------
+		pipeline : str, optional
+			tag (name) of pipeline, by default 'latest', which (medium intelligently)
+			finds latest greatest estimate of gaze
+		"""
+		if self.dbi is None:
+			warnings.warn('self.dbi must be active database interface for this to work')
+			return None
+		# Get list of pipeline keys
+		pl = self.dbi.query(1, type='ParamDictionary', fn='vedb_gaze.pipelines.make_pipeline', tag=pipeline)
+		ple = load_pipeline_elements(self, dbi=self.dbi, **pl.params)
+		return ple
+
+	def load_gaze(self, pipeline='latest', clock='native', time_idx=None):
+		"""Load estimate of gaze based on particular pipeline tag
+
+		Parameters
+		----------
+		pipeline : str, optional
+			name of pipeline, by default 'latest', which (medium intelligently)
+			pulls latest estimate of gaze
+		clock : str, optional
+			which timestamps gaze should have. Default is 'native', which means at ~120 hz 
+			(native eye camera temporal resolution). 'world' specifies that gaze should be
+			matched to nearest world timestamp (or averaged over a window according to
+			`kwargs` that are passed on to `match_timepoints()`)
+		"""
+		ple = self.load_gaze_pipeline(pipeline=pipeline)
+		return ple['gaze']
+
 	def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
 		"""
 		Parameters
@@ -396,13 +430,20 @@ class Session(MappedClass):
 					pass
 		# If subject doesn't exist, save subject
 		if subject._id is None:
-			# Subject is not in database; display other subjects
+			# Exact subject is not in database; display other subjects
 			if db_save:
-				if raise_error:
-					raise ValueError('Unknown subject ID or mismatched subject info - please import manually!')
+				other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+				# if only one database subject matches initials, assume that's OK
+				if len(other_subjects) == 1:
+					print('Config subject:', subject.docdict)
+					print('Keeping db subject:', other_subjects[0].docdict)
+					subject = other_subjects[0]
+					yn = input("OK?")
+					if yn.lower() in ('n'):
+						raise Exception("Manual quit")
 				else:
-					print("Extant subjects w/ same subject_id:")
-					other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+					if raise_error:
+						raise ValueError('Unknown subject ID or mismatched subject info - please import manually!')
 					print([x.docdict for x in other_subjects])
 					print("This subject:")
 					print(subject.docdict)

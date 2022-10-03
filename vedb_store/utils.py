@@ -119,7 +119,10 @@ def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite
 					value = int(value)
 			elif key in ('rig_version'):
 				if value is not None and value not in ('unknown', 'None'):
-					value = float(value)
+					try:
+						value = float(value)
+					except:
+						value = value
 			metadata[key] = value
 		if overwrite_user_info:
 			# Optionally replace user info file with new one
@@ -552,3 +555,193 @@ def get_frame_indices(start_time, end_time, all_time):
 	indices, = np.nonzero(ti)
 	start_frame, end_frame = indices[0], indices[-1] + 1
 	return start_frame, end_frame 
+
+
+def _check_dict_list(dict_list, n=1, **kwargs):
+    tmp = dict_list
+    for k, v in kwargs.items():
+        tmp = [x for x in tmp if (hasattr(x, k)) and (getattr(x, k) == v)]
+    if n is None:
+        return tmp
+    if len(tmp) == n:
+        if n == 1:
+            return tmp[0]
+        else:
+            return tmp
+    else:
+        raise ValueError('Requested number of items not found')
+
+def load_pipeline_elements(session,
+                           pupil_param_tag='plab_default',
+                           pupil_drift_param_tag=None,
+                           cal_marker_param_tag='circles_halfres',
+                           cal_marker_filter_param_tag='cluster_default',
+                           calib_param_tag='monocular_tps_default',
+                           calibration_epoch=0,
+                           val_marker_param_tag='checkerboard_halfres',
+                           val_marker_filter_param_tag='basic_split',
+                           mapping_param_tag='default_mapper',
+                           error_param_tag='smooth_tps_default',
+                           dbi=None,
+                           is_verbose=True,
+                           ):
+    if dbi is None:
+        dbi = session.dbi
+    verbosity = copy.copy(dbi.is_verbose)
+    dbi.is_verbose = is_verbose >= 1
+    
+    # Get all documents associated with session
+    session_docs = dbi.query(session=session._id)
+    # Create outputs dict
+    outputs = dict(session=session)
+    
+    if pupil_param_tag is not None:
+        outputs['pupil'] = {}
+        for eye in ['left', 'right']:
+            try:
+                print("> Searching for %s pupil (%s)" % (eye, pupil_param_tag))
+                outputs['pupil'][eye] = _check_dict_list(session_docs, 
+                                                         n=1,
+                                                         type='PupilDetection', 
+                                                         tag=pupil_param_tag, 
+                                                         eye=eye)
+                print(">> FOUND %s pupil" % (eye))
+            except:
+                print('>> NOT found')
+
+    if cal_marker_param_tag is not None:
+        try:
+            print("> Searching for calibration markers...")
+            outputs['calibration_marker_all'] = _check_dict_list(
+                session_docs, n=1, tag=cal_marker_param_tag, epoch='all')
+            print(">> FOUND it")
+        except:
+            print('>> NOT found')
+
+    if cal_marker_filter_param_tag is not None:
+        try:
+            print("> Searching for filtered calibration markers...")
+            cfiltered_tag = '-'.join([cal_marker_param_tag,
+                                      cal_marker_filter_param_tag])
+            outputs['calibration_marker_filtered'] = _check_dict_list(
+                session_docs, n=1, tag=cfiltered_tag, epoch=calibration_epoch)
+            print(">> FOUND it")
+        except:
+            print('>> NOT found')
+
+    if val_marker_param_tag is not None:
+        try:
+            if isinstance(val_marker_param_tag, tuple):
+                for t in val_marker_param_tag:
+                    print("> Searching for validation markers...")
+                    tmp = _check_dict_list(
+                        session_docs, n=1, tag=t, epoch='all')
+                    outputs['validation_marker_all'] = tmp
+                    if not tmp.failed:
+                        break
+            else:
+                print("> Searching for validation markers...")
+                outputs['validation_marker_all'] = _check_dict_list(
+                    session_docs, n=1, tag=val_marker_param_tag, epoch='all')
+
+            print(">> FOUND it")
+        except:
+            print('>> NOT found')
+
+    if val_marker_filter_param_tag is not None:
+        try:
+            print("> Searching for filtered validation markers...")
+            vfiltered_tag = '-'.join([val_marker_param_tag,
+                                    val_marker_filter_param_tag])
+            tmp = _check_dict_list(session_docs, n=None, tag=vfiltered_tag)
+            if len(tmp) == 0:
+                1/0  # error out, nothing found
+            tmp = sorted(tmp, key=lambda x: x.epoch)
+            outputs['validation_marker_filtered'] = tmp
+            print(">> FOUND %d" % (len(tmp)))
+        except:
+            print(">> NOT found")
+
+    if calib_param_tag is not None:
+        if 'monocular' in calib_param_tag:
+            eyes = ['left', 'right']
+        else:
+            eyes = ['both']
+
+        for ie, eye in enumerate(eyes):
+            if ie == 0:
+                outputs['calibration'] = {}
+                outputs['gaze'] = {}
+                outputs['error'] = {}
+            try:
+                print("> Searching for %s calibration" % eye)
+                calib_tag_full = '-'.join([pupil_param_tag, 
+                                           cal_marker_param_tag, 
+                                           cal_marker_filter_param_tag,
+                                           calib_param_tag])
+                outputs['calibration'][eye] = _check_dict_list(session_docs, 
+                    n=1,
+                    type='Calibration',
+                    tag=calib_tag_full,
+                    eye=eye,
+                    epoch=calibration_epoch)
+                print(">> FOUND %s calibration" % eye)
+            except:
+                print('>> NOT found')
+            try:
+                print("> Searching for %s gaze" % eye)
+                gaze_tag_full = '-'.join([pupil_param_tag,
+                                          cal_marker_param_tag,
+                                          cal_marker_filter_param_tag,
+                                          calib_param_tag,
+                                          mapping_param_tag,
+                                          ])
+                outputs['gaze'][eye] = _check_dict_list(session_docs, n=1, 
+                    type='Gaze', tag=gaze_tag_full, eye=eye)
+                print(">> FOUND %s gaze" % eye)
+            except:
+                print('>> NOT found')
+
+            try:
+                print("> Searching for error")
+                err_tags = [pupil_param_tag, 
+                            cal_marker_param_tag, 
+                            cal_marker_filter_param_tag,
+                            calib_param_tag, 
+                            mapping_param_tag, 
+                            val_marker_param_tag, 
+                            val_marker_filter_param_tag, 
+                            error_param_tag]
+                # Skip any steps not provided? Likely to cause bugs below
+                err_tag = '-'.join(err_tags)
+                tmp = _check_dict_list(session_docs, n=None,
+                                        tag=err_tag, eye=eye)
+                if len(tmp) == 0:
+                    1/0  # error out, nothing found                                        
+                err = sorted(tmp, key=lambda x: x.epoch)
+                outputs['error'][eye] = err
+                print(">> FOUND it")
+            except:
+                print(">> NO error found for %s"%eye)
+
+    for field in ['pupil', 'calibration', 'gaze']:
+        if (field in outputs) and len(outputs[field]) == 0:
+            _ = outputs.pop(field)
+
+    if 'error' in outputs:
+        if 'left' in outputs['error']:
+            n_err_left = len(outputs['error']['left'])
+        else:
+            n_err_left = 0
+        if 'right' in outputs['error']:
+            n_err_right = len(outputs['error']['right'])
+        else:
+            n_err_right = 0
+        if (n_err_left != n_err_right):
+            print("Error mismatch: %d on left, %d on right" %
+              (n_err_left, n_err_right))
+            _ = outputs.pop("error")
+
+    dbi.is_verbose = verbosity
+
+    return outputs
