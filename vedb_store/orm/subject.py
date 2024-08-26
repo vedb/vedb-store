@@ -50,13 +50,13 @@ class Subject(MappedClass):
 		rstr = textwrap.dedent("""
 			vedb_store.Subject
 			{id:>12s}: {subject_id}
-			{demo:>12s}: age={age}, gender={gender}, height={height}
+			{demo:>12s}: birth year={birth_year}, gender={gender}, height={height}
 			""")
 		return rstr.format(
 			id='identifier', 
 			subject_id=self.subject_id, 
 			demo='demographics', 
-			age=self.age,
+			birth_year=self.birth_year,
 			gender=self.gender,
 			height=self.height,
 			)

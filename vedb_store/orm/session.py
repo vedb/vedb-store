@@ -13,7 +13,7 @@ import yaml
 import copy
 import os
 
-from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, get_frame_indices, SUBJECT_FIELDS, SESSION_FIELDS
+from ..utils import parse_sensorstream_gps, parse_vedb_metadata, parse_user_info, get_frame_indices, SUBJECT_FIELDS, SESSION_FIELDS, load_pipeline_elements
 
 BASE_PATH = options.config.get('paths', 'vedb_directory')
 
@@ -47,6 +47,29 @@ REQUIRED_SOON_FILES = [
 	'world.extrinsics',
 	'world.intrinsics',
 	]
+
+
+REQUIRED_FILES_ARCHIVE = [
+	'accel.pldata',
+	'accel_timestamps.npy',
+	'eye0.mp4',
+	'eye0.pldata',
+	'eye0_timestamps.npy',
+	'eye1.mp4',
+	'eye1.pldata',
+	'eye1_timestamps.npy',
+	'gyro.pldata',
+	'gyro_timestamps.npy',
+	'odometry.pldata',
+	'odometry_timestamps.npy',
+	't265.mp4',
+	't265.pldata',
+	't265_timestamps.npy',
+	'worldPrivate.mp4',
+	'world.pldata',
+	'world_timestamps.npy',
+	]
+
 
 class Session(MappedClass):
 	"""Representation of a VEDB recording session.
@@ -132,6 +155,40 @@ class Session(MappedClass):
 		"""Update list of available data to load from path. WIP."""
 		pass
 	
+	def load_gaze_pipeline(self, pipeline='latest'):
+		"""load all elements of a gaze pipeline
+
+		Parameters
+		----------
+		pipeline : str, optional
+			tag (name) of pipeline, by default 'latest', which (medium intelligently)
+			finds latest greatest estimate of gaze
+		"""
+		if self.dbi is None:
+			warnings.warn('self.dbi must be active database interface for this to work')
+			return None
+		# Get list of pipeline keys
+		pl = self.dbi.query(1, type='ParamDictionary', fn='vedb_gaze.pipelines.make_pipeline', tag=pipeline)
+		ple = load_pipeline_elements(self, dbi=self.dbi, **pl.params)
+		return ple
+
+	def load_gaze(self, pipeline='latest', clock='native', time_idx=None):
+		"""Load estimate of gaze based on particular pipeline tag
+
+		Parameters
+		----------
+		pipeline : str, optional
+			name of pipeline, by default 'latest', which (medium intelligently)
+			pulls latest estimate of gaze
+		clock : str, optional
+			which timestamps gaze should have. Default is 'native', which means at ~120 hz 
+			(native eye camera temporal resolution). 'world' specifies that gaze should be
+			matched to nearest world timestamp (or averaged over a window according to
+			`kwargs` that are passed on to `match_timepoints()`)
+		"""
+		ple = self.load_gaze_pipeline(pipeline=pipeline)
+		return ple['gaze']
+
 	def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
 		"""
 		Parameters
@@ -295,7 +352,7 @@ class Session(MappedClass):
 		return self._features
 
 	@classmethod
-	def from_folder(cls, folder, dbinterface=None, raise_error=True, move_to=False, vetted=False, db_save=False, overwrite_user_info=False):
+	def from_folder(cls, folder, dbinterface=None, raise_error=True, raise_file_error=True, move_to=False, vetted=False, db_save=False, overwrite_user_info=False):
 		"""Creates a new instance of this class from the given `docdict`.
 		
 		Parameters
@@ -358,7 +415,7 @@ class Session(MappedClass):
 		except ValueError as err:
 			# Catch error and add to above:
 			error_text = '\n'.join([error_text, err.args[0]])
-		if error_text != '':
+		if error_text != '' and raise_file_error:
 			raise ValueError(error_text)
 		# Set date	(& be explicit about what constitutes date)	
 		session_date = folder_toplevel
@@ -396,13 +453,20 @@ class Session(MappedClass):
 					pass
 		# If subject doesn't exist, save subject
 		if subject._id is None:
-			# Subject is not in database; display other subjects
+			# Exact subject is not in database; display other subjects
 			if db_save:
-				if raise_error:
-					raise ValueError('Unknown subject ID or mismatched subject info - please import manually!')
+				other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+				# if only one database subject matches initials, assume that's OK
+				if len(other_subjects) == 1:
+					print('Config subject:', subject.docdict)
+					print('Keeping db subject:', other_subjects[0].docdict)
+					subject = other_subjects[0]
+					yn = input("OK?")
+					if yn.lower() in ('n'):
+						raise Exception("Manual quit")
 				else:
-					print("Extant subjects w/ same subject_id:")
-					other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+					if raise_error:
+						raise ValueError('Unknown subject ID or mismatched subject info - please import manually!')
 					print([x.docdict for x in other_subjects])
 					print("This subject:")
 					print(subject.docdict)
@@ -526,6 +590,263 @@ class Session(MappedClass):
 		params['date'] = session_date
 		params['recording_system'] = None # remove me
 		params['vetted'] = vetted
+
+		ob.__init__(dbi=dbinterface, **params)
+		# Temporarily set base directory to local base directory
+		# This is a bit fraught.
+		if move_to is None:
+			ob._path = None
+		elif move_to is False:
+			print('Setting _path to:')
+			fdir = os.path.join(current_parent_directory, folder_toplevel)
+			print(fdir)
+			ob._path = fdir
+		else:
+			ob._path = move_to
+		if ob.path != current_parent_directory:
+			pass
+			#print("Moving files to %s..."%ob.path)
+			#print("(Actually doing nothing, fix this if move is needed)")
+		return ob
+
+
+	@classmethod
+	def from_archive(cls, folder, dbinterface=None, raise_error=True, raise_file_error=True, move_to=False, vetted=False, db_save=False, overwrite_user_info=False):
+		"""Creates a new instance of this class from the given `docdict`.
+		
+		Parameters
+		----------
+		folder : string
+			full path to folder name
+		dbinterface : vedb-store.docdb.dbinterface
+			db interface
+		raise_error : bool
+			Whether to raise an error if fields are missing. True simply raises an error, 
+			False allows manual input of missing fields. 
+		overwrite_user_info : bool
+			Whether to create a new yaml file. Old yaml file will be saved as `config_orig.yaml`
+			unless that file already exists (in which case no backup will be created - only
+			original is backed up)
+
+
+		"""
+		ob = cls.__new__(cls)
+		print('\n>>> Importing folder %s'%folder)
+		# Crop '/' from end of folder if exists
+		if folder[-1] == os.path.sep:
+			folder = folder[:-1]
+		current_parent_directory, folder_toplevel = os.path.split(folder)
+		# Catch relative path, make into absolute path
+		if folder_toplevel == '':
+			folder_toplevel = current_parent_directory
+			current_parent_directory = ''
+		if (len(current_parent_directory) == 0) or (current_parent_directory[0] != '/'):
+			current_parent_directory = os.path.abspath(os.path.join(os.path.curdir, current_parent_directory))
+		# Check on files first
+		file_check = os.listdir(os.path.join(current_parent_directory, folder_toplevel))
+		missing_files = set(REQUIRED_FILES_ARCHIVE) - set(file_check)
+		error_text = ''
+		if len(missing_files) > 0:
+			error_text = 'Missing files: {}\n'.format(missing_files)
+		# Check for presence of folder in database if we are aiming to save session in database
+		if db_save:
+			check = dbinterface.query(type='Session', folder=folder_toplevel)
+			if len(check) > 0:
+				print('SESSION FOUND IN DATABASE.')
+				#return check[0]
+			elif len(check) > 1:
+				raise Exception('More than one database session found with this date!')				
+		# Look for meta-data in folder
+		# Get participant info if present
+		# LOAD ME FROM OVERALL CONFIG
+		# participant_file = os.path.join(folder, 'user_info.csv')
+		# if os.path.exists(participant_file):
+		# 	user_info = parse_user_info(participant_file)
+		# 	if 'experimenter_id' in user_info:
+		# 		print("    Collected by %s"%user_info['experimenter_id'])
+		# 	else:
+		# 		print("    Collected by UNKNOWN")
+		# try:
+		# 	metadata = parse_vedb_metadata(yaml_file, participant_file, raise_error=raise_error, overwrite_user_info=overwrite_user_info)
+		# except ValueError as err:
+		# 	# Catch error and add to above:
+		# 	error_text = '\n'.join([error_text, err.args[0]])
+		# if error_text != '' and raise_file_error:
+		# 	raise ValueError(error_text)
+		# Set date	(& be explicit about what constitutes date)	
+		session_date = folder_toplevel
+		try:
+			# Assume year_month_day_hour_min_second for date specification in folder title
+			dt = datetime.datetime.strptime(session_date, '%Y_%m_%d_%H_%M_%S')
+		except:
+			print('Date not parseable!')
+		# Get subject, check for existence in database
+		# subject_params = dict((sf, metadata[sf]) for sf in SUBJECT_FIELDS if metadata[sf] is not None)
+		# if 'subject_id' not in subject_params:
+		# 	if 'experimenter_id' in metadata:
+		# 		e_id = 'experimenter_id=%s, '%metadata['experimenter_id']
+		# 	else:
+		# 		e_id = ''
+		# 	s_id = input("Enter subject_id (%s'abort' to quit): "%e_id)
+		# 	if s_id.lower() == 'abort':
+		# 		raise Exception('Manual quit')
+		# 	else:
+		# 		subject_params['subject_id'] = s_id
+		# subject = Subject(**subject_params, dbi=dbinterface)
+		# # Check for exisistence of this subject
+		# if dbinterface is not None:
+		# 	subject = subject.db_fill(allow_multiple=False)
+		# 	if subject._id is None:
+		# 		print("Attempting secondary subject search")
+		# 		reduced_params = copy.deepcopy(subject_params)
+		# 		for k in ['age','ethnicity']:
+		# 			if k in reduced_params:
+		# 				reduced_params.pop(k)
+		# 		try:
+		# 			print(reduced_params)
+		# 			subject = dbinterface.query(1, **reduced_params)
+		# 		except:
+		# 			pass
+		# # If subject doesn't exist, save subject
+		# if subject._id is None:
+		# 	# Exact subject is not in database; display other subjects
+		# 	if db_save:
+		# 		other_subjects = dbinterface.query(type='Subject', subject_id=subject.subject_id)
+		# 		# if only one database subject matches initials, assume that's OK
+		# 		if len(other_subjects) == 1:
+		# 			print('Config subject:', subject.docdict)
+		# 			print('Keeping db subject:', other_subjects[0].docdict)
+		# 			subject = other_subjects[0]
+		# 			yn = input("OK?")
+		# 			if yn.lower() in ('n'):
+		# 				raise Exception("Manual quit")
+		# 		else:
+		# 			if raise_error:
+		# 				raise ValueError('Unknown subject ID or mismatched subject info - please import manually!')
+		# 			print([x.docdict for x in other_subjects])
+		# 			print("This subject:")
+		# 			print(subject.docdict)
+		# 			yn = input("Save subject? (0-n, save one of above; y, save this subject, q, quit):")
+		# 			if yn.lower() in ['y',]:
+		# 				subject = subject.save()
+		# 			elif yn.lower() in '01234':
+		# 				subject = other_subjects[int(yn)]
+		# 			elif yn.lower() in ['q',]:
+		# 				raise Exception("Manual quit")
+		# 			else:
+		# 				raise ValueError('Unknown value, quitting')
+		# else:
+		# 	print('Subject found in database!')
+
+		# def parse_resolution(res_string):
+		# 	out = res_string.strip('()').split(',')
+		# 	out = [int(x) for x in out]
+		# 	return out
+
+		# camera_types = ['world', 't265', 'eye0', 'eye1']
+		# camera_labels = ['world', 'tracking', 'eye_right', 'eye_left']
+		# cameras = {}
+		# for camera_type, camera_label in zip(camera_types, camera_labels):
+		# 	# Get camera parameters from yaml file
+		# 	cam_params = yaml_doc['streams']['video'][camera_type]
+		# 	recording_params = yaml_doc['commands']['record']['video'][camera_type]
+		# 	input_params = dict(
+		# 				manufacturer=cam_params['device_type'], 
+		# 				device_uid=str(cam_params['device_uid']),
+		# 				resolution=parse_resolution(cam_params['resolution']),
+		# 				fps=int(cam_params['fps']),
+		# 				codec=recording_params['codec'],
+		# 				crf=int(recording_params['encoder_kwargs']['crf']),
+		# 				preset=recording_params['encoder_kwargs']['preset'],
+		# 				color_format=cam_params['color_format'],
+		# 				)
+		# 	if camera_type == 'world':
+		# 		input_params['settings'] = cam_params['settings'] # includes exposure info
+		# 	# if 'eye' in camera_type:
+		# 	# 	input_params['controls'] = cam_params['controls'] # in theory, includes exposure info
+		# 	# Unclear what is best to do about above wrt profiles. 
+		# 	# Check for existence of this camera in database
+		# 	this_camera = Camera(dbi=dbinterface, **input_params)
+		# 	if dbinterface is not None:
+		# 		this_camera = this_camera.db_fill(allow_multiple=False)
+		# 	# If camera doesn't exist, save camera
+		# 	if this_camera._id is None:
+		# 		# Camera is not in database; offer to save if db_save is True
+		# 		if this_camera.device_uid  == 'None':
+		# 			raise ValueError('Camera config file is broken for %s'%folder)
+		# 		if db_save:
+		# 			if raise_error:
+		# 				raise ValueError("New camera or camera settings detected - session must be manually imported!")
+		# 			print("New camera or camera settings detected!\nExtant cameras w/ same manufacturer:")
+		# 			other_cameras = dbinterface.query(type='Camera', manufacturer=this_camera.manufacturer)
+		# 			print(other_cameras)
+		# 			print("This camera:")
+		# 			print(this_camera.docdict)
+		# 			yn = input("Save camera? (y/n):")
+		# 			if yn.lower() in ['y', 't','1']:
+		# 				if camera_label == 'eye_left':
+		# 					default_tag = '{}_left_standard'.format(this_camera.manufacturer)
+		# 				elif camera_label == 'eye_right':
+		# 					default_tag = '{}_right_standard'.format(this_camera.manufacturer)
+		# 				else:
+		# 					default_tag = '{}_standard'.format(this_camera.manufacturer)
+		# 				tag = input("Please input tag for this camera [press enter for default: %s]:"%default_tag) or default_tag
+		# 				this_camera.tag = tag
+		# 				this_camera = this_camera.save()
+		# 	else:
+		# 		# Camera is in database
+		# 		print('%s camera found in database!'%camera_label)
+		# 	cameras[camera_label] = this_camera
+
+		# # recording_system = RecordingSystem(world_camera=cameras['world'],
+		# # 									eye_left=cameras['eye_left'],
+		# # 									eye_right=cameras['eye_right'],
+		# # 									tracking_camera=cameras['tracking'],
+		# # 									tilt_angle=metadata['tilt_angle'],
+		# # 									rig_version=metadata['rig_version'],
+		# # 									dbi=dbinterface,
+		# # 									)
+
+		# recording_system = dict(world_camera=cameras['world'],
+		# 						eye_left=cameras['eye_left'],
+		# 						eye_right=cameras['eye_right'],
+		# 						tracking_camera=cameras['tracking'],
+		# 						tilt_angle=metadata['tilt_angle'],
+		# 						rig_version=metadata['rig_version'],
+		# 						lens=metadata['lens'],
+		# 						)
+
+
+		# query for recording system in database
+		# if dbinterface is not None:
+		# 	recording_system = recording_system.db_fill(allow_multiple=False)
+		# if recording_system._id is None:
+		# 	# Recording system is not in database; give option to save it.
+		# 	if db_save:
+		# 		print("Extant recording systems:")
+		# 		other_systems = dbinterface.query(type='RecordingSystem', 
+		# 			world_camera=cameras['world']._id) # Include only recording systems with this world camera
+		# 		print(other_systems)
+		# 		print("This recording system:")
+		# 		print(recording_system)
+		# 		yn = input("Save recording_system? (y/n):")
+		# 		if yn.lower() in ['y', 't','1']:
+		# 			default_tag = 'vedb_standard_%d'%recording_system.tilt_angle
+		# 			tag = input("Please input tag for this recording_system [press enter for default: %s]:"%default_tag) or default_tag
+		# 			recording_system.tag = tag
+		# 			recording_system = recording_system.save()
+		# else:
+		# 	print('RecordingSystem found in database!')
+		
+		# # Define recording device, w/ tag
+		params = {}
+		# params = dict((sf, metadata[sf]) for sf in SESSION_FIELDS)
+		# params.update(**recording_system)
+		# params['subject'] = subject
+		params['folder'] = folder_toplevel
+		params['date'] = session_date
+		# params['recording_system'] = None # remove me
+		# params['vetted'] = vetted
 
 		ob.__init__(dbi=dbinterface, **params)
 		# Temporarily set base directory to local base directory
