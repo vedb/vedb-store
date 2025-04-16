@@ -3,6 +3,7 @@ import os
 import six
 import json
 import warnings
+import pathlib
 import file_io as fio
 from ..options import config
 
@@ -94,6 +95,8 @@ class MappedClass(object):
 	# 	return None
 
 	def _resolve_sync_dir(self, path):
+		if isinstance(path, pathlib.Path):
+			path = str(path)
 		# Deal with sync path
 		sync_dir = config.get('paths', 'sync_directory')
 		if sync_dir != '':
@@ -111,7 +114,7 @@ class MappedClass(object):
 				path_out = os.path.expanduser(path)
 		else:
 			path_out = os.path.expanduser(path)
-		return path_out
+		return pathlib.Path(path_out)
 
 	def _get_docdict(self, rm_fields=()):
 		"""Get database header dictionary representation of this object
