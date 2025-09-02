@@ -1,17 +1,27 @@
 from .mappedclass import MappedClass
+from .. import utils
 from .. import options
 import file_io
 from collections import OrderedDict
 import datetime
 import warnings
 import pathlib
+import hashlib
 import numpy as np
 import copy
 import os
 
-from ..utils import get_frame_indices, get_time_split, SESSION_FIELDS, load_pipeline_elements
+from ..utils import get_frame_indices, get_time_split, SESSION_FIELDS, load_pipeline_elements, onoff_from_binary
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
+PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
+
+import file_io
+#from vedb_gaze.visualization import show_ellipse
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+from matplotlib import animation, patches, colors, gridspec
+
 
 
 REQUIRED_FILES = [
@@ -39,6 +49,92 @@ OPTIONAL_FILES = [
     'lens.json'
     ]
 
+# Pipeline defaults
+# pipeline_default = dict(
+#     calibration_marker = 'find_concentric_circles-circles_halfres',
+#     calibration_split = 'split_circles',
+#     calibration_cluster = 'cluster_circles',
+#     validation_marker = 'find_checkerboards-checkerboard_halfres_%ssquares',
+#     validation_split = 'split_checkerboards',
+#     validation_cluster = 'cluster_checkerboards',
+#     pupil = 'pylids_eyelids_pupils_v2',
+#     pupil_detrending = 'estimate_slippage-full_eyelid_shape',
+#     calibration = 'monocular_tps_cv_cluster_median_conf75_cut3std', # monocular_tps_default'
+#     gaze_mapping = 'default_mapper', 
+#     error = '',
+# )
+pipeline_default = dict(
+                  pupil_tag='pylids_pupils_eyelids_v2',
+                  pupil_detrend_tag=None,
+                  calibration_marker_tag='circles_halfres',
+                  calibration_split_tag=None,
+                  calibration_cluster_tag='cluster_circles',
+                  validation_marker_tag='checkerboard_halfres_4x7squares',
+                  validation_split_tag=None, 
+                  validation_cluster_tag='cluster_checkerboards',
+                  calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+                  gaze_tag='default_mapper',
+                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
+                  calibration_epoch=0,
+)
+
+
+def make_file_strings(
+        pupil_tag='pylids_pupils_eyelids_v2',
+        pupil_detrend_tag=None,
+        calibration_marker_tag='circles_halfres',
+        calibration_split_tag=None,
+        calibration_cluster_tag='cluster_circles',
+        validation_marker_tag='checkerboard_halfres_4x7squares',
+        validation_split_tag=None, 
+        validation_cluster_tag='cluster_checkerboards',
+        calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+        gaze_tag='default_mapper',
+        error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
+        calibration_epoch=0,
+        # Extra
+        eye=None,
+        fov_str=None,
+        validation_epoch=0):
+        # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
+    if fov_str is None:
+        fov_str = '%s'
+    if eye is None:
+        eye = '%s'
+    calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
+                                       calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
+                                       pupil_tag, pupil_detrend_tag] if x is not None]
+    # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
+    calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
+                                       calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
+                                       pupil_tag, pupil_detrend_tag, \
+                                       calibration_tag, gaze_tag,
+                                       validation_marker_tag, validation_split_tag, validation_cluster_tag, \
+                                       ] if x is not None]
+    error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    out = dict(
+        pupil_file = f'pupil-{eye}-{pupil_tag}.npz',
+        gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz'
+        error_file = f'error-%s-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz
+        )
+    return out
+
+
+# input_hash = hash('-'.join([pipeline[x] for x in ['calibration_marker','calibration_filter',
+#                                                   'validation_marker','validation_filter',
+#                                                   'pupil','detrending',
+#                                                   ]]))
+
+
+ 
+# # Slippage correction
+# pupil_detrend_path = f'pupil_detrended-%s-{pipeline['detrending']}.npz'
+# calibration_marker_path = f'markers-calibration-{calibration_marker_string}-epochall.npz' # epoch all - revisit?
+# validation_marker_path = f'markers-validation-{validation_marker_string}-epoch%02d.npz'
+# calibration_path = f'calibration_%s_{hash()}.npz'
+# error_str = 'error_%s.npz'
+# gaze_str = 'gaze_%s.npz'
 
 class Session(MappedClass):
     """Representation of a VEDB recording session.
@@ -49,6 +145,7 @@ class Session(MappedClass):
     def __init__(self, 
             folder=None, 
             subject=None, 
+            date=None,
             task=None, 
             location=None, 
             fov=None,
@@ -68,6 +165,7 @@ class Session(MappedClass):
         self.dbi = dbi
         self._id = _id
         self._rev = _rev
+        self.date = date
         self._base_path = BASE_PATH
         self._path = None
         self._paths = None
@@ -78,15 +176,24 @@ class Session(MappedClass):
         # Will be written to self.fpath (if defined)
         self._data_fields = []
         # Constructed on the fly and not saved to docdict
-        self._temp_fields = ['path',
-                       'paths',
-                       'datetime', 
-                       'world_time', 
-                       'recording_duration']
+        self._temp_fields = [
+            'path',
+            'paths',
+            'clips',
+            'datetime', 
+            'world_time', 
+            'recording_duration']
         # Fields that are other database objects
         self._db_fields = []
-    
-    def load_gaze_pipeline(self, pipeline='latest'):
+        # This might be time consuming for large queries...
+        self.load_clips()
+
+    def load_clips(self):
+        clip_file = pathlib.Path(self.path) / f'{self.folder}.csv'
+        if clip_file.exists():
+            self.clips = parse_csv(clip_file)
+        
+    def load_gaze_pipeline(self, pipeline='latest', is_verbose=0):
         """load all elements of a gaze pipeline
 
         Parameters
@@ -94,13 +201,17 @@ class Session(MappedClass):
         pipeline : str, optional
             tag (name) of pipeline, by default 'latest', which (medium intelligently)
             finds latest greatest estimate of gaze
+        is_verbose : int or bool
+            False or 0 : print nothing
+            True or 1 : print whether each element was found
+            2+ : print all above and database query results
         """
         if self.dbi is None:
             warnings.warn('self.dbi must be active database interface for this to work')
             return None
         # Get list of pipeline keys
         pl = self.dbi.query(1, type='ParamDictionary', fn='vedb_gaze.pipelines.make_pipeline', tag=pipeline)
-        ple = load_pipeline_elements(self, dbi=self.dbi, **pl.params)
+        ple = load_pipeline_elements(self, dbi=self.dbi, is_verbose=is_verbose, **pl.params)
         return ple
 
     def load_gaze(self, pipeline='latest', clock='native', time_idx=None):
@@ -210,8 +321,11 @@ class Session(MappedClass):
         
     @property
     def datetime(self):
-        dt = datetime.datetime.strptime(self.date, '%Y_%m_%d_%H_%M_%S')
-        return dt
+        if self.date is None:
+            return None
+        else:
+            dt = datetime.datetime.strptime(self.date, '%Y_%m_%d_%H_%M_%S')
+            return dt
     
     @property
     def path(self):
@@ -252,13 +366,6 @@ class Session(MappedClass):
             self._paths = _paths
         return self._paths
     
-    # @property
-    # def features(self):
-    #     if self._features is None:
-    #         # perhaps sort these by tag?
-    #         self._features = self.dbi.query(type='Features', session=self._id)
-    #     return self._features
-
     @classmethod
     def from_folder(cls, folder, dbinterface=None, subject=None, raise_error=True, db_save=False, load_label_csv=True):
         """Creates a new instance of this class from the given `docdict`.
@@ -290,7 +397,7 @@ class Session(MappedClass):
             raise ValueError(f"Folder {folder.name} not found!")
         # Check on files available in folder
         missing_files = _check_paths(folder)
-        if len(missing_files) > 0:
+        if (len(missing_files) > 0) & raise_error:
             raise ValueError(f'Missing files: {missing_files}\n')
         # Check for presence of folder in database if we are aiming to save session in database
         if db_save:
@@ -302,24 +409,23 @@ class Session(MappedClass):
                 raise Exception('More than one database session found with this date!')                
         # VEDB specific things: folder name as date, csv file for task, location labels
         # look for session csv for vedb
-        if load_label_csv:
-            clips = parse_csv(folder / f'{folder.name}.csv')
+            
         # Set date    (& be explicit about what constitutes date)    
         try:
             # Assume year_month_day_hour_min_second for date specification in folder title
             session_date = datetime.datetime.strptime(folder.name, '%Y_%m_%d_%H_%M_%S')
+            date = folder.name
         except:
             # Switch on verbosity?
-            session_date = None
+            date = None
             print('Folder name not parseable as a date')
 
         ob.__init__(dbi=dbinterface,
               subject=subject,
               folder=folder.name,
-              date=session_date
+              date=date
               )
-        if load_label_csv:
-            ob.clips = clips
+        
         return ob
 
 
@@ -350,7 +456,12 @@ class SessionClip(object):
         self.offset = offset
         self.session = session
         self.tag = tag
-        #self.native_timestamps = native_timestamps
+        # lazy loading
+        self.gaze_paths = None
+        self._pupil = None
+        self._gaze = None
+        self._error = None
+        self._odometry = None
     
     @classmethod
     def from_indices(cls, onset_i, offset_i, timestamps, session=None, tag=None):
@@ -375,7 +486,48 @@ class SessionClip(object):
             return None
         if ':' in self.tag:
             return self.tag.split(':')[0]    
+    
+    def load_gaze_pipeline(self, pipeline=pipeline_default, clock='native', eye=('left','right')):
+        """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
         
+        """
+        if self.session is None:
+            return None
+        self.gaze_paths = make_file_strings(pipeline)
+        self._pupil = dict((lr, np.load(PROC_PATH / self.session /self.gaze_paths['pupil']%lr)) for lr in eye)
+        if clock is not 'native':
+            for e in eye:
+                self._pupil[e] = match_time_points([dict(timestamp=self.world_time), self._pupil[e]])
+        self._gaze = dict((lr, np.load(PROC_PATH / self.session /self.gaze_paths['gaze']%lr)) for lr in eye)
+        #self._error = dict((lr, np.load(self.gaze_paths['gaze']%lr)) for lr in eye)
+
+    @property
+    def pupil(self):
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
+        if self._pupil is None:
+            pupil_file_left = PROC_PATH / self.session / (self.gaze_paths['pupil']%'left')
+            pupil_file_right = PROC_PATH / self.session / (self.gaze_paths['pupil']%'right')
+            self._pupil = {}
+            if pupil_file_left.exists():
+                self._pupil['left'] = self(dict(np.load(pupil_file_left, allow_pickle=True)))
+            if pupil_file_right.exists():
+                self._pupil['right'] = self(dict(np.load(pupil_file_right, allow_pickle=True)))
+        return self._pupil
+    
+    @property
+    def gaze(self):
+        if self._gaze is None:
+            gaze_file_left = PROC_PATH / self.session / gaze_path%'left'
+            gaze_file_right = PROC_PATH / self.session / gaze_path%'right'
+            gaze = {}
+            if gaze_file_left.exists():
+                gaze['left'] = self(dict(np.load(gaze_file_left)))
+            if gaze_file_right.exists():
+                gaze['right'] = self(dict(np.load(gaze_file_right)))
+            self._gaze = gaze
+        return self._gaze
+
     def binary(self, timestamps, comparison_type=('>=', '<'), pre=0, post=0):
         """Get binary index for this clip within `timestamps`
         
@@ -461,8 +613,8 @@ class SessionClip(object):
         if self.session is None:
             raise ValueError('Cannot load data with clip `session` set')
         if data_type == 'world_camera':
-            fname = fbase_official / self.session / 'worldPrivate.mp4'
-            ftime = fbase_official / self.session / 'world_timestamps_0start.npy'
+            fname = BASE_PATH / self.session / 'worldPrivate.mp4'
+            ftime = BASE_PATH / self.session / 'world_timestamps_0start.npy'
             world_time = np.load(ftime)
             data = file_io.load_video(fname, frames=self.indices(world_time), **kwargs)
             time = world_time[self.binary(world_time)]
@@ -475,8 +627,8 @@ class SessionClip(object):
             return self(odo)
         elif data_type in ('eye_left', 'eye_right'):
             lr = '1' if 'left' in data_type else '0'
-            fname = fbase_official / self.session / f'eye{lr}_blur.mp4'
-            ftime = fbase_official / self.session / f'eye{lr}_timestamps_0start.npy'
+            fname = BASE_PATH / self.session / f'eye{lr}_blur.mp4'
+            ftime = BASE_PATH / self.session / f'eye{lr}_timestamps_0start.npy'
             data_time = np.load(ftime)
             data = file_io.load_video(fname, frames=self.indices(data_time), **kwargs)
             time = data_time[self.binary(data_time)]            
@@ -502,7 +654,255 @@ class SessionClip(object):
         start_times += self.onset
         output = np.array([start_times, start_times+sample_duration]).T
         return [SessionClip(*times, tag=self.tag, session=self.session) for times in output]
-    
+
+    def make_gaze_animation(self,
+                            rect_size=(600,600),
+                            pupil_str = 'pupil_detection-%s-pylids_eyelids_pupils_v2.npz',
+                            gaze_str = 'gaze-%s-default_mapper-monocular_tps_cv_cluster_median_conf75_cut3std-c0eb1e655a0f58e7905b.npz',
+                            fps=30, 
+                            world_size_factor=0.25,
+                            hspace=0.1,
+                            wspace=None,
+                            eye_left_color=(1.0, 0.5, 0.0),  # orange
+                            eye_right_color=(0.0, 0.5, 1.0),  # cyan
+                            session_info=SESSION_INFO,
+                        ):
+        """Make radical gaze animation"""
+        global eye_left_frame
+        global eye_left_image
+        global eye_right_frame    
+        global eye_right_image
+        eye_video_size = 400 # x 400, square
+        tmp = utils.arraydict_to_dictlist(session_info)
+        si_dict = dict((x['folder'], x) for x in tmp)
+        si = si_dict[self.session]
+        try:
+            ses = Session.from_folder(self.session)
+            pl = PROC_PATH / ses.folder / (pupil_str%'left')
+            gl = PROC_PATH / ses.folder / (gaze_str%'left')
+            pr = PROC_PATH / ses.folder / (pupil_str%'right')
+            gr = PROC_PATH / ses.folder / (gaze_str%'right')
+            include_left_eye = 'eye_left' in ses.paths
+            include_right_eye = 'eye_right' in ses.paths
+            
+            if include_left_eye:
+                eltf, elvf = ses.paths['eye_left']
+                eye_left_frame = 0
+                eye_left_time = np.load(eltf)
+                eye_left_vid = ses.get_video_handle('eye_left')
+            if include_right_eye:
+                ertf, ervf = ses.paths['eye_right']    
+                eye_right_frame = 0
+                eye_right_time = np.load(ertf)
+                eye_right_vid = ses.get_video_handle('eye_right')
+            
+            _, vh, vw, _ = file_io.list_array_shapes(ses.paths['world_camera'][1])
+            n_frames = len(self(dict(timestamp=ses.world_time))['timestamp'])
+            #frame = world[0]
+            rect_width = rect_size[0] / vw
+            rect_height = rect_size[1] / vh
+            ar = vw / vh
+
+            fig = plt.figure(figsize=(8, 8 * 13.5/12)) #* 14 / 12))
+            gs = GridSpec(2,3, figure=fig,  hspace=hspace, wspace=wspace,
+                        height_ratios=[1, 2], width_ratios=[1, 1, 1])
+            ax_eye_left = fig.add_subplot(gs[0,0])
+            ax_eye_right = fig.add_subplot(gs[0,1])
+            ax_gc = fig.add_subplot(gs[0, 2])
+            ax_vid = fig.add_subplot(gs[1,:])
+            ax_vid.axis([0, 1, 1, 0])
+            ax_vid.set_xticks([]) # To visual field size?
+            ax_vid.set_yticks([])
+
+            # Initialize all plots
+            if gl.exists():
+                gaze_left = dict(np.load(gl))
+                gaze_rect_pixel_size = rect_size
+                # FIX ME
+                wt = ses.world_time[self.binary(ses.world_time)]
+                g_matched = vedb_gaze.utils.match_time_points(dict(timestamp=wt), gaze_left)
+                _, gaze_centered_video = wt, wv = self.load('world_camera', 
+                                                            center=g_matched['norm_pos'],
+                                                            crop_size=gaze_rect_pixel_size)
+
+            if gr.exists():
+                gaze_right = dict(np.load(gr))
+            world_time, world = self.load('world_camera', size=world_size_factor)
+            world_h = ax_vid.imshow(world[0], extent=[0, 1, 1, 0], aspect='auto')
+            # For now: choose best, don't rely on left.
+            if gl.exists():
+                gaze_rect_lh = gaze_rect(gaze_left['norm_pos'][0], rect_width, rect_height, ax=ax_vid, linewidth=3, edgecolor=eye_left_color)
+                gaze_dot_lh = ax_vid.scatter(*gaze_left['norm_pos'][0], c=eye_left_color)
+                gc_h = ax_gc.imshow(gaze_centered_video[0], extent=[0, 1, 1, 0])
+            else:
+                gaze_rect_lh = gaze_rect([-1,-1], rect_width, rect_height, ax=ax_vid, linewidth=3)
+                gaze_dot_lh = ax_vid.scatter(*[-1,-1], c='black')
+                gc_h = ax_gc.imshow(np.zeros((200,200)), extent=[0, 1, 1, 0])
+
+            if gr.exists():
+                gaze_rect_rh = gaze_rect(gaze_right['norm_pos'][0], rect_width, rect_height, ax=ax_vid, linewidth=3, edgecolor=eye_right_color)
+                gaze_dot_rh = ax_vid.scatter(*gaze_right['norm_pos'][0], c=eye_right_color)
+                #gc_h = ax_gc.imshow(gaze_centered_video[0], extent=[0, 1, 1, 0])
+            else:
+                gaze_rect_rh = gaze_rect([-1,-1], rect_width, rect_height, ax=ax_vid, linewidth=3)
+                gaze_dot_rh = ax_vid.scatter(*[-1,-1], c='black')
+                #gc_h = ax_gc.imshow(np.zeros((200,200)), extent=[0, 1, 1, 0])
+
+                
+            if include_left_eye:
+                success, eye_left_image = eye_left_vid.VideoObj.read()
+                eye_left_h = ax_eye_left.imshow(eye_left_image, extent=[0, 1, 1, 0])
+                
+            if pl.exists():
+                #print('rendering pupil left')
+                pupil_left = dict(np.load(pl, allow_pickle=True))
+                ellipse_data_left = dict((k, np.array(v) / eye_video_size)
+                                        for k, v in pupil_left['ellipse'][0].items())
+                pupil_left_eh, pupil_left_dh = show_ellipse(ellipse_data_left,
+                                        center_color=eye_left_color,
+                                        facecolor=eye_left_color +
+                                        (0.5,),
+                                        ax=ax_eye_left)
+                #print(pupil_left_eh)
+
+            if include_right_eye:
+                success, eye_right_image = eye_right_vid.VideoObj.read()
+                eye_right_h = ax_eye_right.imshow(eye_right_image, extent=[0, 1, 1, 0])
+                
+            if pr.exists():
+                print('rendering pupil right')
+                pupil_right = dict(np.load(pr, allow_pickle=True))
+                ellipse_data_right = dict((k, np.array(v) / eye_video_size)
+                                        for k, v in pupil_right['ellipse'][0].items())
+                pupil_right_eh, pupil_right_dh = show_ellipse(ellipse_data_right,
+                                        center_color=eye_right_color,
+                                        facecolor=eye_right_color +
+                                        (0.5,),
+                                        ax=ax_eye_right)
+                #print(pupil_right_eh)
+                
+            ax_eye_left.axis([1, 0, 1, 0]) # [0,1, 0, 1]
+            ax_eye_left.set_xticks([])
+            ax_eye_left.set_yticks([])
+            
+            ax_eye_right.axis([0, 1, 0, 1]) #[1, 0, 1, 0]
+            ax_eye_right.set_xticks([])
+            ax_eye_right.set_yticks([])
+
+            
+            gaze_box_vis_degrees = si['fov'] * rect_width
+            vmx_deg = gaze_box_vis_degrees / 2
+            tick_labels = ['%.1f'%x for x in [-vmx_deg, 0, vmx_deg]]
+            ax_gc.set_xticks([0, 0.5, 1])
+            ax_gc.set_xticklabels(tick_labels)
+            ax_gc.set_yticks([0, 0.5, 1])
+            ax_gc.set_yticklabels(tick_labels)
+            ax_gc.grid('on', linestyle=':', color=(0.95, 0.85, 0))
+            #plt.close(fig)
+            
+            def set_ellipse(ellipse_h, dot_h, ellipse, frame):
+                """h_s are two handles: for ellipse, for center dot"""
+                tmp = ellipse[frame]
+                ellipse_data = dict((k, np.array(v) / eye_video_size)
+                            for k, v in tmp.items())
+                ellipse_h.set_center(ellipse_data['center'])
+                ellipse_h.set_height(ellipse_data['axes'][1])
+                ellipse_h.set_width(ellipse_data['axes'][0])
+                ellipse_h.set_angle(tmp['angle'])
+                # Accumulate?
+                dot_h.set_offsets([ellipse_data['center']])
+                return ellipse_h, dot_h
+            
+            def init():
+                to_return = [world_h]
+                world_h.set_array(np.zeros_like(world[0]))
+                
+                if gl.exists():
+                    gaze_rect_lh.set_xy([0.5, 0.5] - np.array([rect_width/2, rect_height/2]))
+                    gaze_dot_lh.set_offsets([0.5, 0.5])
+                    gc_h.set_array(np.zeros_like(gaze_centered_video[0]))
+                    to_return.extend([gaze_rect_lh, gaze_dot_lh, gc_h])
+                
+                if include_left_eye:
+                    #print(eye_left_h)
+                    eye_left_h.set_array(np.zeros((400,400), dtype=np.uint8)) #np.zeros_like(eye_left_ds[0]))
+                    to_return.append(eye_left_h)
+                    
+                if pl.exists():
+                    _ = set_ellipse(pupil_left_eh, pupil_left_dh,
+                                                                pupil_left['ellipse'], 0)
+                    to_return.extend([pupil_left_eh, pupil_left_dh])
+                    
+                if include_right_eye:
+                    eye_right_h.set_array(np.zeros((400,400), dtype=np.uint8)) #np.zeros_like(eye_right_ds[0]))
+                    to_return.append(eye_right_h)
+                    
+                if pr.exists():
+                    _ = set_ellipse(pupil_right_eh, pupil_right_dh,
+                                                                pupil_right['ellipse'], 0)
+                    to_return.extend([pupil_right_eh, pupil_right_dh])
+                
+                return to_return
+
+            def animate(i):
+                global eye_left_frame
+                global eye_right_frame
+                global eye_right_image
+                global eye_left_image
+                #success, world_im = world_vid.VideoObj.read()
+                world_h.set_data(world[i]) # world_im)
+                world_time_this_frame = world_time[i]
+                to_return = [world_h]
+                
+                
+                if include_left_eye:
+                    while eye_left_time[eye_left_frame] < world_time_this_frame:
+                        eye_left_frame += 1
+                        success, eye_left_image = eye_left_vid.VideoObj.read()
+                    eye_left_h.set_data(eye_left_image)
+                    to_return.append(eye_left_h)
+                if pl.exists():
+                    _ = set_ellipse(pupil_left_eh, pupil_left_dh,
+                                                                pupil_left['ellipse'], eye_left_frame)
+                    to_return.extend([pupil_left_eh, pupil_left_dh])
+                if include_right_eye:
+                    while eye_right_time[eye_right_frame] < world_time_this_frame:
+                        eye_right_frame += 1
+                        success, eye_right_image = eye_right_vid.VideoObj.read()
+                    eye_right_h.set_data(eye_right_image)
+                    to_return.append(eye_right_h)
+                if pr.exists():
+                    _ = set_ellipse(pupil_right_eh, pupil_right_dh,
+                                                                pupil_right['ellipse'], eye_right_frame)
+                    to_return.extend([pupil_right_eh, pupil_right_dh])
+
+                if gl.exists():
+                    gaze_rect_lh.set_xy(gaze_left['norm_pos'][eye_left_frame] - np.array([rect_width/2, rect_height/2]))
+                    gaze_dot_lh.set_offsets(gaze_left['norm_pos'][eye_left_frame])
+                    try:
+                        gc_h.set_data(gaze_centered_video[i])
+                    except:
+                        pass
+                        #print("GAAAAAA")
+                    to_return.extend([gaze_rect_lh, gaze_dot_lh, gc_h])
+                    
+                if gr.exists():
+                    gaze_rect_rh.set_xy(gaze_right['norm_pos'][eye_right_frame] - np.array([rect_width/2, rect_height/2]))
+                    gaze_dot_rh.set_offsets(gaze_right['norm_pos'][eye_right_frame])
+                    to_return.extend([gaze_rect_rh, gaze_dot_rh])
+
+                
+                return to_return
+
+
+
+            anim = animation.FuncAnimation(fig, animate, init_func=init, frames=n_frames, interval=1/fps * 1000, blit=True)
+        except:
+            eye_left_vid.VideoObj.release()
+            eye_right_vid.VideoObj.release()
+            raise
+        return anim
+
         
     def __repr__(self,):
         return (f'Clip for {self.session}\n'
@@ -547,7 +947,7 @@ class ClipList(object):
         if timestamps is None:
             timestamps = self.native_timestamps
         if any_way:
-            out = np.any(np.vstack([clip.binary(timestamps=timestamps,
+            out = np.any(np.vstack([self.binary(timestamps=timestamps,
                                                 comparison_type=comparison_type,
                                                 pre=pre,
                                                 post=post)
@@ -565,7 +965,7 @@ class ClipList(object):
         if timestamps is None:
             timestamps = self.native_timestamps
         ii = self.binary(timestamps=timestamps, comparison_type=comparison_type)
-        out = vedb_gaze.utils.onoff_from_binary(ii, return_duration=False)
+        out = onoff_from_binary(ii, return_duration=False)
         return np.asarray(out)
     
     def times(self, include_duration=False):
@@ -614,8 +1014,20 @@ class ClipList(object):
     @classmethod
     def from_binary(cls, binary, native_timestamps, session=None, tags=None):
         ob = cls.__new__(cls)
-        onoff_indices = vedb_gaze.utils.onoff_from_binary(binary, return_duration=False)
+        onoff_indices = onoff_from_binary(binary, return_duration=False)
         onoffs = [native_timestamps[ii] for ii in onoff_indices]
+        ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
+        return ob
+    
+    @classmethod
+    def from_clips(cls, list_of_clips, native_timestamps):
+        ob = cls.__new__(cls)
+        # Require that all clips are from same session. For now, clip lists must tbe same session.
+        session = list_of_clips[0].session
+        assert all([x.session == session for x in list_of_clips]),\
+              'SessionClip objects in ClipList must be from same session!'
+        onoffs = [(x.onset, x.offset) for x in list_of_clips]
+        tags = [x.tag for x in list_of_clips]
         ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
         return ob
     
@@ -623,18 +1035,14 @@ class ClipList(object):
         new_clips = []
         #chk = cliplist.binary(self.native_timestamps)
         for clip in self:
-            #b = clip.binary(self.native_timestamps)
-            #if not any(b & chk):
-            #    new_clips.append(b)
-        #bb = np.any(np.vstack(new_clips), axis=0)
-        #return ClipList.from_binary(bb, self.native_timestamps, self.session)
-
             onset_btw = any([(other_clip.onset >= clip.onset) &\
                               (other_clip.onset <= clip.offset) for other_clip in cliplist])
             offset_btw = any([(other_clip.offset >= clip.onset) &\
                                (other_clip.offset <= clip.offset) for other_clip in cliplist])
             if not onset_btw | offset_btw:
                 new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
         onoffs = [(x.onset, x.offset) for x in new_clips]
         tags = [x.tag for x in new_clips]
         return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
@@ -643,7 +1051,7 @@ class ClipList(object):
     def __add__(self, cliplist):
         a = self.binary(self.native_timestamps)
         b = cliplist.binary(self.native_timestamps)
-        return ClipList.from_binary(a | b, self.native_timestamps, session=self.session, tags=self.tags)
+        return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
 
     def __len__(self):
         return(len(self.clip_list))
@@ -660,6 +1068,9 @@ class ClipList(object):
     #     ob.__init([c.indices(native_timestamps) for c in clip_list], native_timestamps, clip_list[0].session)
     #     return ob
 
+
+def _clean_str(x): 
+    return x.lower().strip().replace('_',' ')    
 
 def parse_csv(folder):
     """parse csv file for folder
@@ -710,8 +1121,8 @@ def parse_csv(folder):
             else:
                 raise ValueError(f'Unclear line parsing for {fname}')
             frames.append(fr)
-            locations.append(loc)
-            tasks.append(task)                
+            locations.append(_clean_str(loc))
+            tasks.append(_clean_str(task))
                 
     clips = []
     for st, fin, loc_, lab_ in zip(frames[:-1], frames[1:], locations, tasks):
@@ -741,3 +1152,29 @@ def _check_paths(fpath):
             if not fname in file_check:
                 missing_files.append(fname)
     return missing_files
+
+def save_clips(clips, fname):
+    to_save = [dict((k, getattr(x, k)) for k in ['onset', 'offset', 'session','tag']) for x in clips]
+    np.savez(fname, **utils.dictlist_to_arraydict(to_save))
+
+def load_clips(fname):
+    cc = utils.arraydict_to_dictlist(dict(np.load(fname, allow_pickle=True)))
+    return [SessionClip(**c) for c in cc]
+
+
+
+# Maybe move me: 
+
+def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **kwargs):
+    if ax is None:
+        ax = plt.gca()
+    # Create a Rectangle patch
+    gp = gaze_position - np.array([hdim, vdim]) / 2
+    rect = patches.Rectangle(gp, hdim, vdim,
+                             facecolor='none',
+                             edgecolor=edgecolor,
+                             linewidth=linewidth,
+                             **kwargs)
+    # Add the patch to the Axes
+    rh = ax.add_patch(rect)
+    return rh
