@@ -625,7 +625,7 @@ class SessionClip(object):
             out = load_gaze(self.session, **kwargs)
             return self(out)
         elif data_type == 'odometry':
-            odo = dict(np.load(fbase_data / self.session / 'odometry.npz'))
+            odo = dict(np.load(BASE_PATH / self.session / 'odometry.npz'))
             return self(odo)
         elif data_type in ('eye_left', 'eye_right'):
             lr = '1' if 'left' in data_type else '0'
