@@ -9,309 +9,19 @@ import copy
 import os
 
 
-SESSION_FIELDS = ['study_site',
-					'experimenter_id',
-					'lighting',
-					'scene',
-					'instruction',
-					]
-SUBJECT_FIELDS = ['subject_id',
-					'birth_year',
-					'gender',
-					'ethnicity',
-					'IPD',
-					'height',
-					]
+SESSION_FIELDS = [#'study_site', # add back?
+                    #'scene',
+                    'location',
+                    'task',
+                    ]
 RECORDING_FIELDS = ['tilt_angle',
-					'lens',
-					'rig_version',
-					]
+                    'lens',
+                    'rig_version',
+                    ]
 
 METADATA_DEFAULTS = dict(tilt_angle='100',
 						 lens='new',
 						 )
-METADATA_DEFAULTS.update(dict((field, 'None') for field in SUBJECT_FIELDS))
-
-def parse_vedb_metadata(yaml_file, participant_file, raise_error=True, overwrite_user_info=False, default_values=None):
-	"""Extract metadata data from yaml file, filling in missing fields
-
-	Optionally backs up original file and creates a new file with filled-in fields
-
-	Only works for metadata (regarding experiment, subject, etc), not recording
-	devices, so far. 
-
-	Parameters
-	----------
-	yaml_file : string
-		path to yaml file
-	raise_error : bool
-		Whether to raise an error if fields are missing. True simply raises an error, 
-		False allows manual input of missing fields. 
-	overwrite_user_info : bool
-		Whether to create a new user info file. Old user file will be saved as `user_info_orig.csv`
-		unless that file already exists (in which case no backup will be created - only
-		original is backed up)
-
-	"""
-	# Assure yaml_file is a pathlib.Path
-	yaml_file = pathlib.Path(yaml_file)
-	participant_file = pathlib.Path(participant_file)
-	if default_values is None:
-		default_values = METADATA_DEFAULTS
-	with open(yaml_file, mode='r') as fid:
-		yaml_doc = yaml.safe_load(fid)
-	required_fields = SESSION_FIELDS + SUBJECT_FIELDS + RECORDING_FIELDS
-	allowable_missing = ['IPD', 'rig_version', 'instruction', 'birth_year', 'lens', 'scene', 'ethnicity','height', 'gender'] # Temporarily...
-	if 'metadata' in yaml_doc:
-		# Current version, good.
-		metadata = yaml_doc['metadata']
-		metadata_location = 'base'
-	elif 'metadata' in yaml_doc['commands']['record']:
-		# Legacy config compatibility
-		metadata = yaml_doc['commands']['record']['metadata']
-		metadata_location = 'commands/record'
-	else: 
-		metadata = None
-	if metadata is None:
-		if raise_error:
-			raise ValueError("Missing metadata: no yaml file in folder.")
-		else:
-			metadata = {}
-	user_info = parse_user_info(participant_file)
-	metadata.update(user_info)
-	metadata_keys = list(metadata.keys())
-	metadata_keys = [k for k in metadata_keys if (metadata[k] is not None) and metadata[k] != '']
-	missing_fields = list(set(required_fields) - set(metadata_keys))
-	if len(missing_fields) > 0:
-		if raise_error: 
-			# TEMP allow flexibility with some fields, we will crack down on this later
-			for mf in allowable_missing:
-				if mf in missing_fields:
-					if mf in default_values:
-						metadata[mf] = default_values[mf]
-					else:
-						metadata[mf] = 'unknown'
-					warnings.warn(f"Missing '{mf}' for subject; consider collecting!")
-					_ = missing_fields.pop(missing_fields.index(mf))
-			if len(missing_fields) > 0:
-				raise ValueError('Missing fields in subject meta-data: {}'.format(missing_fields))
-		else:
-			# Fill in missing fields manually
-			print('Missing fields: ', missing_fields)
-			for mf in missing_fields:
-				if mf in default_values:
-					default = default_values[mf]
-				else:
-					default = 'unknown'
-				value = input("Enter value for %s [press enter for '%s', type 'abort' to quit]"%(mf, default)) or default
-				if value.lower() in ('abort' "'abort'"):
-					raise Exception('Manual quit.')
-				metadata[mf] = value
-		# Assure values are of proper types
-		for key in metadata.keys():
-			value = metadata[key]
-			if isinstance(value, str) and value.lower() in ('none'):
-				value = None
-			if key in ('tilt_angle',):
-				value = int(value)
-			elif key in ('age', 'height', 'birth_year'):
-				if value is not None and value not in ('unknown', 'None'):
-					value = int(value)
-			elif key in ('rig_version'):
-				if value is not None and value not in ('unknown', 'None'):
-					try:
-						value = float(value)
-					except:
-						value = value
-			metadata[key] = value
-		if overwrite_user_info:
-			# Optionally replace user info file with new one
-			new_participant_file = participant_file.parent / 'user_info_orig.csv'
-			if new_participant_file.exists():
-				# Get rid of current one, original is already saved
-				participant_file.unlink()			
-			else:
-				# Create backup
-				print('copying to %s'%new_participant_file)
-				participant_file.rename(new_participant_file)			
-			write_user_info(participant_file, metadata)
-	return metadata
-
-
-def parse_user_info(fname):
-	"""Parse user_info csv file for session"""
-	if fname is None:
-		# Is it a good idea to just return an empty dict? Should we throw an error?
-		return {}
-	with open(fname) as fid:
-		lines = fid.readlines()
-		out = dict(tuple([y.strip().strip("'").strip('"') for y in x.split(',')]) for x in lines)
-		for k in out.keys():
-			if k in ['IPD']:
-				try:
-					out[k] = float(out[k])
-				except ValueError:
-					out[k] = None
-			elif k in ['height', 'age', 'birth_year']:
-				try:
-					out[k] = int(out[k])
-				except ValueError:
-					out[k] = None
-			elif k in ['experimenter_id','subject_id']:
-				out[k] = out[k].upper()
-				# Oneoff bullshit
-				if out[k] == 'AFULLER':
-					out[k] = 'AF'
-				elif out[k] == 'NUDNOUIL':
-					out[k] = 'IN'
-			elif k in ['ethnicity', 'gender']:
-				out[k] = out[k].lower()
-			if k == 'gender':
-				if out[k] in ('f',):
-					out[k] = 'female'
-				elif out[k] in ('m',):
-					out[k] = 'male'
-	_ = out.pop('key')
-	return out
-
-
-
-# def standardize_metadata_fields(user_info):
-# 	"""Enforce some standardization on metadata fields"""
-# 	substitutions = dict(gender=dict(male=['m','man','male']),
-# 	for k, v in user_info.items():
-# 		this_value = v.lower().strip(' ').strip('"')
-# 		# height
-# 		if k=='height':
-# 			if "'" in v:
-# 				# height given in ft'in"
-
-# 			if v > 90:
-
-def write_user_info(fname, metadata):
-	"""Write user info (metadata) to file"""
-	with open(fname, mode='w') as fid:
-		fid.write('key,value\n')
-		for k, v in metadata.items():
-			if v is None:
-				vv = ''
-			else:
-				vv = v
-			fid.write(f'{k},{vv}\n')
-
-### --- GPS parsing --- ###
-syntax = OrderedDict(**{
-  1:  ['gps', 'lat', 'lon', 'alt'],	 # deg, deg, meters MSL WGS84
-  3:  ['accel', 'x', 'y', 'z'],		 # m/s/s
-  4:  ['gyro', 'x', 'y', 'z'],		  # rad/s
-  5:  ['mag', 'x', 'y', 'z'],		   # microTesla
-  6:  ['gpscart', 'x', 'y', 'z'],	   # (Cartesian XYZ) meters
-  7:  ['gpsv', 'x', 'y', 'z'],		  # m/s
-  8:  ['gpstime', ''],				  # ms
-  81: ['orientation', 'x', 'y', 'z'],   # degrees
-  82: ['lin_acc',	 'x', 'y', 'z'],
-  83: ['gravity',	 'x', 'y', 'z'],   # m/s/s
-  84: ['rotation',	'x', 'y', 'z'],   # radians
-  85: ['pressure',	''],			  # ???
-  86: ['battemp', ''],				  # centigrade
-# Not exactly sensors, but still useful data channels:
- -10: ['systime', ''],
- -11: ['from', 'IP', 'port'],
-})
-
-index_to_column = OrderedDict(**{
-  1:  [1, 2, 3],	 # deg, deg, meters MSL WGS84
-  3:  [4, 5, 6],	 # m/s/s
-  4:  [7, 8, 9],	 # rad/s
-  5:  [10, 11, 12],  # microTesla
-  6:  [13, 14, 15],  # (Cartesian XYZ) meters
-  7:  [16, 17, 18],  # m/s
-  8:  [19],		  # ms
-  81: [20, 21, 22],  # degrees
-  82: [23, 24, 25],
-  83: [26, 27, 28],  # m/s/s
-  84: [29, 30, 31],  # radians
-  85: [32],		  # ???
-  86: [33],		  # centigrade
-
-# Not exactly sensors, but still useful data channels:
- -10: [34],
- -11: [35, 36],
-})
-
-column_keys = list(syntax.keys())
-column_names = ['time']
-for cname in syntax.values():
-	if len(cname) == 2:
-		cnames = [cname[0]]
-	else:
-		cnames = ['_'.join([cname[0], x]) for x in cname[1:]]
-	column_names += cnames	
-
-def _parse_sensorstream_line(line):
-	"""Get contents of one line of gps.csv file"""
-	out = np.full(len(column_names), np.nan)
-	tmp = [x.strip() for x in line.split(',')]
-	tmp = [np.float(x) if x is not '' else np.nan for x in tmp]
-	out[0] = tmp.pop(0)
-	while len(tmp) > 0:
-		j = tmp.pop(0)
-		if np.isnan(j):
-			continue
-		j = int(j)
-		if not int(j) in column_keys:
-			continue
-		for jj in index_to_column[j]:
-			value = tmp.pop(0)
-			#print(jj, column_names[jj], value)
-			out[jj] = value
-	return out
-
-def parse_sensorstream_gps(fname, sub_type):
-	"""Parse gps file into 
-	
-	Parameters
-	----------
-	fname : string
-		Description
-	data_type : str
-		string, optionally with ':' specifying a sub-component of gps data (e.g. latitude)
-	
-	Returns
-	-------
-	timestamps : arary
-		array of timestamps for gps data. STILL NOT ON SAME TIME SCALE AS REST OF STREAMS.
-		requires cross-correlation of inertial sensor data.
-	gps_dict : OrderedDict
-		dict of gps values. 
-
-	Notes
-	-----
-	For each key, values will be removed for any values that are nans across
-	all keys for a given time point. Time points will also be removed. Thus, 
-	specifying different sub-components of 
-	"""
-	with open(fname) as fid:
-		lines = fid.readlines()
-	# Parse line by line
-	values = np.vstack([_parse_sensorstream_line(line) for line in lines])
-	tmp = OrderedDict((cn, val) for cn, val in zip(column_names, values.T))
-	tt = tmp.pop('time')
-	if sub_type is not None:
-		# Parse component of gps
-		key_list = [k for k in tmp.keys() if sub_type in k]
-		out = OrderedDict((k, tmp[k]) for k in key_list)
-	else:
-		out = tmp
-	# Parse for nans
-	key_list = list(out.keys())
-	value_present = np.vstack([~np.isnan(out[k]) for k in key_list]).T
-	value_present = np.any(value_present, axis=1)
-	tt = tt[value_present]
-	for k in key_list:
-		out[k] = out[k][value_present]
-
-	return tt, out
 
 
 def specify_marker_epochs(folder, fps=30, write_to_folder=True):
@@ -343,6 +53,7 @@ def specify_marker_epochs(folder, fps=30, write_to_folder=True):
 			with open(yaml_file, mode='w') as fid:
 				yaml.dump(markers, fid)
 	return markers
+
 
 def dictlist_to_arraydict(dictlist):
     """Convert from pupil format list of dicts to dict of arrays"""
@@ -531,7 +242,77 @@ def get_function(function_name):
 
 
 def get_nearest_index(timestamp, all_time):
-	pass
+    j = np.argmin(np.abs(all_time - timestamp))
+    return j
+
+
+def match_time_points(*data, fn=np.median, window=None):
+    """Compute gaze position across matched time points
+    
+    Currently selects all gaze points within half a video frame of 
+    the target time (first data timestamp field) and takes median
+    of those values. 
+    
+    NOTE: This is messy. computing median doesn't work for fields of 
+    data that are e.g. dictionaries. These must be removed before 
+    calling this function for now. 
+    """
+    if window is None:
+        # Overwite any function argument if window is set to none;
+        # this will do nearest-frame resampling
+        def fn(x, axis=None):
+            return x
+    # Timestamps for first input are used as a reference
+    reference_time = data[0]['timestamp']
+    # Preallocate output list
+    output = []
+    # Loop over all subsequent fields of data
+    for d in data[1:]:
+        t = d['timestamp'].copy()
+        new_dict = dict(timestamp=reference_time)
+        # Loop over all timestamps in time reference
+        for i, frame_time in enumerate(reference_time):
+            # Preallocate lists
+            if i == 0:
+                for k, v in d.items():
+                    if k in new_dict:
+                        continue
+                    shape = v.shape
+                    new_dict[k] = np.zeros(
+                        (len(reference_time),) + shape[1:], dtype=v.dtype)
+            if window is None:
+                # Nearest frame selection
+                fr = np.argmin(np.abs(t - frame_time))
+                time_index = np.zeros_like(t) > 0
+                time_index[fr] = True
+            else:
+                # Selection of all frames within window
+                time_index = np.abs(t - frame_time) < window
+            # Loop over fields of inputs
+            for k, v in d.items():
+                if k == 'timestamp':
+                    continue
+                try:
+                    frame = fn(v[time_index], axis=0)
+                    new_dict[k][i] = frame
+                except:
+                    # Field does not support indexing of this kind;
+                    # This should probably raise a warning at least...
+                    pass
+        # Remove any keys with all fields deleted
+        keys = list(d.keys())
+        for k in keys:
+            if len(new_dict[k]) == 0:
+                _ = new_dict.pop(k)
+            else:
+                new_dict[k] = np.asarray(new_dict[k])
+        output.append(new_dict)
+    # Flexible output, depending on number of inputs
+    if len(output) == 1:
+        return output[0]
+    else:
+        return tuple(output)
+
 
 def get_frame_indices(start_time, end_time, all_time):
 	"""Finds start and end indices for frames that are between `start_time` and `end_time`
@@ -555,6 +336,113 @@ def get_frame_indices(start_time, end_time, all_time):
 	indices, = np.nonzero(ti)
 	start_frame, end_frame = indices[0], indices[-1] + 1
 	return start_frame, end_frame 
+
+
+def onoff_from_binary(data, return_duration=True):
+    """Converts a binary variable data into onsets, offsets, and optionally durations
+    
+    This may yield unexpected behavior if the first value of `data` is true.
+    
+    Parameters
+    ----------
+    data : array-like, 1D
+        binary array from which onsets and offsets should be extracted
+    return_duration : bool, optional
+        Description
+    
+    Returns
+    -------
+    TYPE
+        Description
+    
+    """
+    if data[0]:
+        start_value = 1
+    else:
+        start_value = 0
+    data = data.astype(float).copy()
+
+    ddata = np.hstack([[start_value], np.diff(data)])
+    (onsets,) = np.nonzero(ddata > 0)
+    # print(onsets)
+    (offsets,) = np.nonzero(ddata < 0)
+    # print(offsets)
+    if (len(offsets) == 0) & (len(onsets) == 1):
+        offsets = [len(data)]
+        on_at_end = True
+    else:
+        on_at_end = False
+    onset_first = onsets[0] < offsets[0]
+    len(onsets) == len(offsets)
+
+    #on_at_end = False
+    on_at_start = False
+    if onset_first:
+        if len(onsets) > len(offsets):
+            offsets = np.hstack([offsets, [-1]])
+            on_at_end = True
+    else:
+        if len(offsets) > len(onsets):
+            onsets = np.hstack([-1, offsets])
+            on_at_start = True
+    onoff = np.vstack([onsets, offsets])
+    if return_duration:
+        duration = offsets - onsets
+        if on_at_end:
+            duration[-1] = len(data) - onsets[-1]
+        if on_at_start:
+            duration[0] = offsets[0] - 0
+        onoff = np.vstack([onoff, duration])
+
+    onoff = onoff.T.astype(int)
+    return onoff
+
+
+def onoff_to_binary(onoff, length):
+    """Convert (onset, offset) tuples to binary index
+    
+    Parameters
+    ----------
+    onoff : list of tuples
+        Each tuple is (onset_index, offset_index, [duration_in_frames]) for some event
+    length : total length of output vector
+        Scalar value for length of output binary index
+    
+    Returns
+    -------
+    index
+        boolean index vector
+    """
+    index = np.zeros(length,)
+    for on, off in onoff[:, :2]:
+        index[on:off] = 1
+    return index > 0
+
+
+def time_to_index(onsets_offsets, timeline, index_type='integer'):
+    """find indices between onsets & offsets in timeline
+
+    Parameters
+    ----------
+    onset_offsets : array-like
+        array of onsets and offsets in TIME
+    timeline : array-like
+        1d array of timestamps; this is the timeline into which to translate the time indices
+    index_type : str
+        'integer' or 'boolean'; 
+        'integer' returns integer indices for onsets and offsets in the specified timeline
+        'binary' returns boolean indices to select segments of the 
+    """
+    if not isinstance(onsets_offsets, np.ndarray):
+        onsets_offsets = np.asarray(onsets_offsets)
+    out = np.zeros(onsets_offsets.shape, dtype=int)
+    for ct, (on, off) in enumerate(onsets_offsets):
+        i = np.flatnonzero(timeline > on)[0]
+        j = np.flatnonzero(timeline < off)[-1]
+        out[ct] = [int(i), int(j)]
+    if index_type=='boolean':
+        out = onoff_to_binary(out, len(timeline))
+    return out
 
 
 def _check_dict_list(dict_list, n=1, **kwargs):
@@ -583,12 +471,12 @@ def load_pipeline_elements(session,
                            mapping_param_tag='default_mapper',
                            error_param_tag='smooth_tps_default',
                            dbi=None,
-                           is_verbose=True,
+                           is_verbose=1,
                            ):
     if dbi is None:
         dbi = session.dbi
     verbosity = copy.copy(dbi.is_verbose)
-    dbi.is_verbose = is_verbose >= 1
+    dbi.is_verbose = is_verbose >= 2
     
     # Get all documents associated with session
     session_docs = dbi.query(session=session._id)
@@ -599,58 +487,72 @@ def load_pipeline_elements(session,
         outputs['pupil'] = {}
         for eye in ['left', 'right']:
             try:
-                print("> Searching for %s pupil (%s)" % (eye, pupil_param_tag))
+                if is_verbose >= 1:
+                    print("> Searching for %s pupil (%s)" % (eye, pupil_param_tag))
                 outputs['pupil'][eye] = _check_dict_list(session_docs, 
                                                          n=1,
                                                          type='PupilDetection', 
                                                          tag=pupil_param_tag, 
                                                          eye=eye)
-                print(">> FOUND %s pupil" % (eye))
+                if is_verbose >= 1:
+                    print(">> FOUND %s pupil" % (eye))
             except:
-                print('>> NOT found')
+                if is_verbose >= 1:
+                    print('>> NOT found')
 
     if cal_marker_param_tag is not None:
         try:
-            print("> Searching for calibration markers...")
+            if is_verbose >= 1:
+                print("> Searching for calibration markers...")
             outputs['calibration_marker_all'] = _check_dict_list(
                 session_docs, n=1, tag=cal_marker_param_tag, epoch='all')
-            print(">> FOUND it")
+            if is_verbose >= 1:
+                print(">> FOUND it")
         except:
-            print('>> NOT found')
+            if is_verbose >= 1:
+                print('>> NOT found')
 
     if cal_marker_filter_param_tag is not None:
         try:
-            print("> Searching for filtered calibration markers...")
+            if is_verbose >= 1:
+                print("> Searching for filtered calibration markers...")
             cfiltered_tag = '-'.join([cal_marker_param_tag,
                                       cal_marker_filter_param_tag])
             outputs['calibration_marker_filtered'] = _check_dict_list(
                 session_docs, n=1, tag=cfiltered_tag, epoch=calibration_epoch)
-            print(">> FOUND it")
+            if is_verbose >= 1:
+                print(">> FOUND it")
         except:
-            print('>> NOT found')
+            if is_verbose >= 1:
+                print('>> NOT found')
 
     if val_marker_param_tag is not None:
         try:
             if isinstance(val_marker_param_tag, tuple):
                 for t in val_marker_param_tag:
-                    print("> Searching for validation markers...")
+                    if is_verbose >= 1:
+                        print("> Searching for validation markers...")
                     tmp = _check_dict_list(
                         session_docs, n=1, tag=t, epoch='all')
                     outputs['validation_marker_all'] = tmp
                     if not tmp.failed:
                         break
             else:
-                print("> Searching for validation markers...")
+                if is_verbose >= 1:
+                    print("> Searching for validation markers...")
                 outputs['validation_marker_all'] = _check_dict_list(
                     session_docs, n=1, tag=val_marker_param_tag, epoch='all')
 
-            print(">> FOUND it")
+            if is_verbose >= 1:
+                print(">> FOUND it")
         except:
-            print('>> NOT found')
+            if is_verbose >= 1:
+                print('>> NOT found')
 
     if val_marker_filter_param_tag is not None:
         try:
-            print("> Searching for filtered validation markers...")
+            if is_verbose >= 1:
+                print("> Searching for filtered validation markers...")
             vfiltered_tag = '-'.join([val_marker_param_tag,
                                     val_marker_filter_param_tag])
             tmp = _check_dict_list(session_docs, n=None, tag=vfiltered_tag)
@@ -658,9 +560,11 @@ def load_pipeline_elements(session,
                 1/0  # error out, nothing found
             tmp = sorted(tmp, key=lambda x: x.epoch)
             outputs['validation_marker_filtered'] = tmp
-            print(">> FOUND %d" % (len(tmp)))
+            if is_verbose >= 1:
+                print(">> FOUND %d" % (len(tmp)))
         except:
-            print(">> NOT found")
+            if is_verbose >= 1:
+                print(">> NOT found")
 
     if calib_param_tag is not None:
         if 'monocular' in calib_param_tag:
@@ -674,7 +578,8 @@ def load_pipeline_elements(session,
                 outputs['gaze'] = {}
                 outputs['error'] = {}
             try:
-                print("> Searching for %s calibration" % eye)
+                if is_verbose >= 1:
+                    print("> Searching for %s calibration" % eye)
                 calib_tag_full = '-'.join([pupil_param_tag, 
                                            cal_marker_param_tag, 
                                            cal_marker_filter_param_tag,
@@ -685,11 +590,14 @@ def load_pipeline_elements(session,
                     tag=calib_tag_full,
                     eye=eye,
                     epoch=calibration_epoch)
-                print(">> FOUND %s calibration" % eye)
+                if is_verbose >= 1:
+                    print(">> FOUND %s calibration" % eye)
             except:
-                print('>> NOT found')
+                if is_verbose >= 1:
+                    print('>> NOT found')
             try:
-                print("> Searching for %s gaze" % eye)
+                if is_verbose >= 1:
+                    print("> Searching for %s gaze" % eye)
                 gaze_tag_full = '-'.join([pupil_param_tag,
                                           cal_marker_param_tag,
                                           cal_marker_filter_param_tag,
@@ -698,12 +606,15 @@ def load_pipeline_elements(session,
                                           ])
                 outputs['gaze'][eye] = _check_dict_list(session_docs, n=1, 
                     type='Gaze', tag=gaze_tag_full, eye=eye)
-                print(">> FOUND %s gaze" % eye)
+                if is_verbose >= 1:
+                    print(">> FOUND %s gaze" % eye)
             except:
-                print('>> NOT found')
+                if is_verbose >= 1:
+                    print('>> NOT found')
 
             try:
-                print("> Searching for error")
+                if is_verbose >= 1:
+                    print("> Searching for error")
                 err_tags = [pupil_param_tag, 
                             cal_marker_param_tag, 
                             cal_marker_filter_param_tag,
@@ -720,9 +631,11 @@ def load_pipeline_elements(session,
                     1/0  # error out, nothing found                                        
                 err = sorted(tmp, key=lambda x: x.epoch)
                 outputs['error'][eye] = err
-                print(">> FOUND it")
+                if is_verbose >= 1:
+                    print(">> FOUND it")
             except:
-                print(">> NO error found for %s"%eye)
+                if is_verbose >= 1:
+                    print(">> NO error found for %s"%eye)
 
     for field in ['pupil', 'calibration', 'gaze']:
         if (field in outputs) and len(outputs[field]) == 0:
@@ -745,3 +658,15 @@ def load_pipeline_elements(session,
     dbi.is_verbose = verbosity
 
     return outputs
+
+def get_time_split(total_time, n_parts, frac_to_vary=0.05):
+    """
+    stddev, if not None, overrules frac_to_vary
+    """
+    mean_duration = total_time / n_parts
+    stddev = mean_duration * frac_to_vary
+    vec = np.random.normal(loc=mean_duration, scale=stddev, size=(n_parts))
+    vec *= (total_time / vec.sum())
+    return vec
+
+
