@@ -15,6 +15,8 @@ from ..utils import get_frame_indices, get_time_split, SESSION_FIELDS, load_pipe
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
+SESSION_INFO = dict(np.load(BASE_PATH / 'session_info_wip.npz'))
+
 
 import file_io
 #from vedb_gaze.visualization import show_ellipse
