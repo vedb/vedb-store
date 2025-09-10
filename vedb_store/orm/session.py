@@ -115,8 +115,8 @@ def make_file_strings(
     error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
     out = dict(
         pupil_file = f'pupil-{eye}-{pupil_tag}.npz',
-        gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz'
-        error_file = f'error-%s-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz
+        gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz',
+        error_file = f'error-%s-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
         )
     return out
 
