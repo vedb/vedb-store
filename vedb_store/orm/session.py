@@ -24,6 +24,33 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib import animation, patches, colors, gridspec
 
+def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
+    """Show opencv ellipse in matplotlib, optionally with image underlay
+
+    Parameters
+    ----------
+    ellipse : dict
+        dict of ellipse parameters derived from opencv, with fields:
+        * center: tuple (x, y)
+        * axes: tuple (x length, y length)
+        * angle: scalar, in degrees
+    img : array
+        underlay image to display
+    ax : matplotlib axis
+        axis into which to plot ellipse
+    kwargs : passed to matplotlib.patches.Ellipse
+    """
+    if ax is None:
+        fig, ax = plt.subplots()
+    ell = patches.Ellipse(
+        ellipse["center"], *ellipse["axes"], angle=ellipse["angle"], **kwargs
+    )
+    if img is not None:
+        ax.imshow(img, cmap="gray")
+    patch_h = ax.add_patch(ell)
+    pt_h = ax.scatter(ellipse["center"][0], ellipse["center"][1], color=center_color)
+    return patch_h, pt_h
+
 
 
 REQUIRED_FILES = [
@@ -625,7 +652,7 @@ class SessionClip(object):
             out = load_gaze(self.session, **kwargs)
             return self(out)
         elif data_type == 'odometry':
-            odo = dict(np.load(BASE_PATH / self.session / 'odometry.npz'))
+            odo = file_io.load_msgpack((BASE_PATH / self.session / 'odometry.pldata'))
             return self(odo)
         elif data_type in ('eye_left', 'eye_right'):
             lr = '1' if 'left' in data_type else '0'
@@ -668,6 +695,7 @@ class SessionClip(object):
                             eye_left_color=(1.0, 0.5, 0.0),  # orange
                             eye_right_color=(0.0, 0.5, 1.0),  # cyan
                             session_info=SESSION_INFO,
+                            raise_error=False,
                         ):
         """Make radical gaze animation"""
         global eye_left_frame
@@ -679,7 +707,7 @@ class SessionClip(object):
         si_dict = dict((x['folder'], x) for x in tmp)
         si = si_dict[self.session]
         try:
-            ses = Session.from_folder(self.session)
+            ses = Session.from_folder(self.session, raise_error=raise_error)
             pl = PROC_PATH / ses.folder / (pupil_str%'left')
             gl = PROC_PATH / ses.folder / (gaze_str%'left')
             pr = PROC_PATH / ses.folder / (pupil_str%'right')
@@ -722,7 +750,7 @@ class SessionClip(object):
                 gaze_rect_pixel_size = rect_size
                 # FIX ME
                 wt = ses.world_time[self.binary(ses.world_time)]
-                g_matched = vedb_gaze.utils.match_time_points(dict(timestamp=wt), gaze_left)
+                g_matched = utils.match_time_points(dict(timestamp=wt), gaze_left)
                 _, gaze_centered_video = wt, wv = self.load('world_camera', 
                                                             center=g_matched['norm_pos'],
                                                             crop_size=gaze_rect_pixel_size)
@@ -772,7 +800,7 @@ class SessionClip(object):
                 eye_right_h = ax_eye_right.imshow(eye_right_image, extent=[0, 1, 1, 0])
                 
             if pr.exists():
-                print('rendering pupil right')
+                #print('rendering pupil right')
                 pupil_right = dict(np.load(pr, allow_pickle=True))
                 ellipse_data_right = dict((k, np.array(v) / eye_video_size)
                                         for k, v in pupil_right['ellipse'][0].items())
