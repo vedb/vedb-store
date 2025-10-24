@@ -1,5 +1,5 @@
 from . import orm, options
-from .orm.session import Session
+from .orm.session import Session, SessionClip
 from .orm.recording import RecordingSystem, RecordingDevice, Camera, Odometer, GPS
 from .orm.segment import Segment
 from .orm.subject import Subject

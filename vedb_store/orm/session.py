@@ -110,6 +110,7 @@ pipeline_default = dict(
 
 def make_file_strings(
         pupil_tag='pylids_pupils_eyelids_v2',
+        eyelid_tag=None,
         pupil_detrend_tag=None,
         calibration_marker_tag='circles_halfres',
         calibration_split_tag=None,
@@ -373,10 +374,8 @@ class Session(MappedClass):
                 if isinstance(fnm, tuple):
                     ff = 'no_file.nope'
                     for f in fnm:
-                        #print('looking for',str(base_path / f))
                         if (base_path / f).exists():
                             ff = copy.copy(f)
-                            #print('FOUND IT!')
                             break
                 else:
                     ff = copy.copy(fnm)
@@ -388,7 +387,6 @@ class Session(MappedClass):
                 data_path = base_path / ff
                 timestamp_path = base_path / (fstem + '_timestamps_0start.npy')
                 if data_path.exists() & timestamp_path.exists():
-                    #print(f'Adding {nm} to paths')
                     _paths[nm] = (timestamp_path, data_path)
                 else:
                     print(f'failed for {nm}:', timestamp_path, data_path)
@@ -413,8 +411,7 @@ class Session(MappedClass):
 
         """
         ob = cls.__new__(cls)
-        #print('\n>>> Importing folder %s'%folder)
-        if ~isinstance(folder, pathlib.Path):
+        if not isinstance(folder, pathlib.Path):
             folder = pathlib.Path(folder)
         # Check if folder is locally defined
         if folder.parent == pathlib.Path('.'):
@@ -487,6 +484,7 @@ class SessionClip(object):
         self.tag = tag
         # lazy loading
         self.gaze_paths = None
+        self._session_obj = None
         self._pupil = None
         self._gaze = None
         self._error = None
@@ -520,14 +518,10 @@ class SessionClip(object):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
         
         """
+        self.clock = clock 
         if self.session is None:
             return None
         self.gaze_paths = make_file_strings(pipeline)
-        self._pupil = dict((lr, np.load(PROC_PATH / self.session /self.gaze_paths['pupil']%lr)) for lr in eye)
-        if clock is not 'native':
-            for e in eye:
-                self._pupil[e] = match_time_points([dict(timestamp=self.world_time), self._pupil[e]])
-        self._gaze = dict((lr, np.load(PROC_PATH / self.session /self.gaze_paths['gaze']%lr)) for lr in eye)
         #self._error = dict((lr, np.load(self.gaze_paths['gaze']%lr)) for lr in eye)
 
     @property
@@ -535,26 +529,25 @@ class SessionClip(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._pupil is None:
-            pupil_file_left = PROC_PATH / self.session / (self.gaze_paths['pupil']%'left')
-            pupil_file_right = PROC_PATH / self.session / (self.gaze_paths['pupil']%'right')
-            self._pupil = {}
-            if pupil_file_left.exists():
-                self._pupil['left'] = self(dict(np.load(pupil_file_left, allow_pickle=True)))
-            if pupil_file_right.exists():
-                self._pupil['right'] = self(dict(np.load(pupil_file_right, allow_pickle=True)))
+            self._pupil = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
+                               for lr, fname in self.gaze_dict['pupil'].items())
+            # Enumerate options here for clock
+            if self.clock is not 'native':
+                for e in self._pupil.keys():
+                    self._pupil[e] = match_time_points([dict(timestamp=self.world_time), self._pupil[e]])     
         return self._pupil
     
     @property
     def gaze(self):
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
         if self._gaze is None:
-            gaze_file_left = PROC_PATH / self.session / gaze_path%'left'
-            gaze_file_right = PROC_PATH / self.session / gaze_path%'right'
-            gaze = {}
-            if gaze_file_left.exists():
-                gaze['left'] = self(dict(np.load(gaze_file_left)))
-            if gaze_file_right.exists():
-                gaze['right'] = self(dict(np.load(gaze_file_right)))
-            self._gaze = gaze
+            self._gaze = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
+                               for lr, fname in self.gaze_dict['gaze'].items())
+            # Enumerate options here for clock
+            if self.clock is not 'native':
+                for e in self._gaze.keys():
+                    self._gaze[e] = match_time_points([dict(timestamp=self.world_time), self._gaze[e]])                    
         return self._gaze
 
     def binary(self, timestamps, comparison_type=('>=', '<'), pre=0, post=0):
@@ -653,6 +646,10 @@ class SessionClip(object):
             return self(out)
         elif data_type == 'odometry':
             odo = file_io.load_msgpack((BASE_PATH / self.session / 'odometry.pldata'))
+            odo = utils.dictlist_to_arraydict(odo)
+            # Replace odometry time with 0-referenced time
+            odo_t = np.load(BASE_PATH / self.session / 'odometry_timestamps_0start.npy')
+            odo['timestamp'] = odo_t
             return self(odo)
         elif data_type in ('eye_left', 'eye_right'):
             lr = '1' if 'left' in data_type else '0'
@@ -683,6 +680,25 @@ class SessionClip(object):
         start_times += self.onset
         output = np.array([start_times, start_times+sample_duration]).T
         return [SessionClip(*times, tag=self.tag, session=self.session) for times in output]
+    def shade_bg(self, ax=None, fcol=(.9, .9, .9), yl=None, vert=False, zorder=-1):
+        """Shade in xtick grid (every other tick mark is gray/white)"""
+        if ax is None:
+            fig, ax = plt.subplots()
+        st, fin = self.onset, self.offset
+        if yl is None:
+            yl = plt.ylim()
+        if vert:
+            # interpret yl as xlim, w as height
+            ax.fill([yl[0], yl[0], yl[1], yl[1]],
+                [st, fin, fin, st],
+                color=fcol, edgecolor='none', zorder=zorder)
+            plt.xlim(yl)
+        else:
+            ax.fill([st, fin, fin, st],
+                [yl[0], yl[0], yl[1], yl[1]],
+                color=fcol, edgecolor='none', zorder=zorder)
+            plt.ylim(yl)
+        
 
     def make_gaze_animation(self,
                             rect_size=(600,600),
@@ -784,7 +800,6 @@ class SessionClip(object):
                 eye_left_h = ax_eye_left.imshow(eye_left_image, extent=[0, 1, 1, 0])
                 
             if pl.exists():
-                #print('rendering pupil left')
                 pupil_left = dict(np.load(pl, allow_pickle=True))
                 ellipse_data_left = dict((k, np.array(v) / eye_video_size)
                                         for k, v in pupil_left['ellipse'][0].items())
@@ -793,14 +808,12 @@ class SessionClip(object):
                                         facecolor=eye_left_color +
                                         (0.5,),
                                         ax=ax_eye_left)
-                #print(pupil_left_eh)
 
             if include_right_eye:
                 success, eye_right_image = eye_right_vid.VideoObj.read()
                 eye_right_h = ax_eye_right.imshow(eye_right_image, extent=[0, 1, 1, 0])
                 
             if pr.exists():
-                #print('rendering pupil right')
                 pupil_right = dict(np.load(pr, allow_pickle=True))
                 ellipse_data_right = dict((k, np.array(v) / eye_video_size)
                                         for k, v in pupil_right['ellipse'][0].items())
@@ -809,7 +822,6 @@ class SessionClip(object):
                                         facecolor=eye_right_color +
                                         (0.5,),
                                         ax=ax_eye_right)
-                #print(pupil_right_eh)
                 
             ax_eye_left.axis([1, 0, 1, 0]) # [0,1, 0, 1]
             ax_eye_left.set_xticks([])
@@ -854,8 +866,7 @@ class SessionClip(object):
                     to_return.extend([gaze_rect_lh, gaze_dot_lh, gc_h])
                 
                 if include_left_eye:
-                    #print(eye_left_h)
-                    eye_left_h.set_array(np.zeros((400,400), dtype=np.uint8)) #np.zeros_like(eye_left_ds[0]))
+                    eye_left_h.set_array(np.zeros((400,400), dtype=np.uint8))
                     to_return.append(eye_left_h)
                     
                 if pl.exists():
@@ -913,7 +924,6 @@ class SessionClip(object):
                         gc_h.set_data(gaze_centered_video[i])
                     except:
                         pass
-                        #print("GAAAAAA")
                     to_return.extend([gaze_rect_lh, gaze_dot_lh, gc_h])
                     
                 if gr.exists():
