@@ -641,6 +641,11 @@ class SessionClip(object):
             data = file_io.load_video(fname, frames=self.indices(world_time), **kwargs)
             time = world_time[self.binary(world_time)]
             return time, data
+        elif data_type == 'world_time': 
+            ftime = BASE_PATH / self.session / 'world_timestamps_0start.npy'
+            world_time = np.load(ftime)
+            time = world_time[self.binary(world_time)]
+            return time
         elif data_type == 'gaze':
             out = load_gaze(self.session, **kwargs)
             return self(out)
