@@ -9,20 +9,12 @@ import copy
 import os
 
 
-SESSION_FIELDS = [#'study_site', # add back?
-                    #'scene',
-                    'location',
-                    'task',
-                    ]
-RECORDING_FIELDS = ['tilt_angle',
-                    'lens',
-                    'rig_version',
-                    ]
-
-METADATA_DEFAULTS = dict(tilt_angle='100',
-						 lens='new',
-						 )
-
+def read_yaml(fname):
+    """Thin wrapper to safely read a yaml file into a dictionary"""
+    out = dict()
+    with open(fname,"r") as fid:
+        out = yaml.safe_load(fid)
+    return out
 
 def specify_marker_epochs(folder, fps=30, write_to_folder=True):
 	ordinals = ['first', 'second', 'third', 'fourth', 'fifth', 'too many']
@@ -473,6 +465,7 @@ def load_pipeline_elements(session,
                            dbi=None,
                            is_verbose=1,
                            ):
+    raise Exception('Deprecated! Need to re-imagine this.')
     if dbi is None:
         dbi = session.dbi
     verbosity = copy.copy(dbi.is_verbose)

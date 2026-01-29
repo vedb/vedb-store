@@ -1,3 +1,35 @@
+"""vedb_store.orm.session
+=========================
+
+Utilities for representing and working with VEDB recording sessions.
+
+This module provides classes and helpers to manage session data and
+temporal clips within sessions. Main classes and functions include
+
+- Session
+    Representation of a VEDB recording session. Methods load data
+    streams, manage file paths, and interface with gaze pipelines.
+- SessionClip
+    Represents a labeled time interval within a session and provides
+    methods to slice, sample, and visualize data for that interval.
+- ClipList
+    Container for multiple SessionClip instances with logical
+    operations and conversion utilities.
+
+Notes
+-----
+Timestamps used throughout are typically zero-referenced to the
+first frame of the world video (world_timestamps_0start.npy). Many
+functions expect numpy arrays of timestamps and return time-indexed
+slices of data.
+
+Examples
+--------
+>>> from vedb_store.orm.session import Session
+>>> s = Session.from_folder('/path/to/session')
+>>> tt, frames = s.load('world_camera', time_idx=(0, 5))
+"""
+
 from .mappedclass import MappedClass
 from .. import utils
 from .. import options
@@ -15,30 +47,47 @@ from ..utils import get_frame_indices, get_time_split, SESSION_FIELDS, load_pipe
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
-SESSION_INFO = dict(np.load(BASE_PATH / 'session_info_wip.npz'))
+SESSION_INFO = dict(np.load(BASE_PATH / 'session_info.npz'))
 
 
 import file_io
-#from vedb_gaze.visualization import show_ellipse
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib import animation, patches, colors, gridspec
 
+
+def get_session_info(session, session_info=SESSION_INFO):   
+    tmp = utils.arraydict_to_dictlist(session_info)
+    si_dict = dict((x['folder'], x) for x in tmp)
+    si = si_dict[session]
+    return si
+
 def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
-    """Show opencv ellipse in matplotlib, optionally with image underlay
+    """Show an OpenCV-style ellipse on a Matplotlib axis, optionally with an image underlay.
 
     Parameters
     ----------
     ellipse : dict
-        dict of ellipse parameters derived from opencv, with fields:
-        * center: tuple (x, y)
-        * axes: tuple (x length, y length)
-        * angle: scalar, in degrees
-    img : array
-        underlay image to display
-    ax : matplotlib axis
-        axis into which to plot ellipse
-    kwargs : passed to matplotlib.patches.Ellipse
+        Ellipse parameters in OpenCV format with keys:
+        - 'center' : tuple of float (x, y)
+        - 'axes' : tuple of float (width, height) lengths of the ellipse axes
+        - 'angle' : float, rotation angle in degrees
+    img : array_like, optional
+        Image to display as a background under the ellipse. If ``None``, no
+        image is shown. Default is ``None``.
+    ax : matplotlib.axes.Axes, optional
+        Axes in which to plot. If ``None``, a new figure and axes are created.
+    center_color : str or tuple, optional
+        Color for the ellipse center marker. Default is ``'r'``.
+    **kwargs : dict, optional
+        Additional keyword arguments passed to ``matplotlib.patches.Ellipse``.
+
+    Returns
+    -------
+    tuple
+        ``(patch_h, pt_h)`` where ``patch_h`` is the :class:`matplotlib.patches.Ellipse`
+        instance added to the axes and ``pt_h`` is the scatter handle for the
+        ellipse center.
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -79,19 +128,6 @@ OPTIONAL_FILES = [
     ]
 
 # Pipeline defaults
-# pipeline_default = dict(
-#     calibration_marker = 'find_concentric_circles-circles_halfres',
-#     calibration_split = 'split_circles',
-#     calibration_cluster = 'cluster_circles',
-#     validation_marker = 'find_checkerboards-checkerboard_halfres_%ssquares',
-#     validation_split = 'split_checkerboards',
-#     validation_cluster = 'cluster_checkerboards',
-#     pupil = 'pylids_eyelids_pupils_v2',
-#     pupil_detrending = 'estimate_slippage-full_eyelid_shape',
-#     calibration = 'monocular_tps_cv_cluster_median_conf75_cut3std', # monocular_tps_default'
-#     gaze_mapping = 'default_mapper', 
-#     error = '',
-# )
 pipeline_default = dict(
                   pupil_tag='pylids_pupils_eyelids_v2',
                   pupil_detrend_tag=None,
@@ -101,9 +137,9 @@ pipeline_default = dict(
                   validation_marker_tag='checkerboard_halfres_4x7squares',
                   validation_split_tag=None, 
                   validation_cluster_tag='cluster_checkerboards',
-                  calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+                  calibration_tag='monocular_tps_cv_cluster_median_conf40_cut3std',
                   gaze_tag='default_mapper',
-                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
+                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf40', 
                   calibration_epoch=0,
 )
 
@@ -125,12 +161,57 @@ def make_file_strings(
         # Extra
         eye=None,
         fov_str=None,
+        validation_checkerboard_size = '4x7',
         validation_epoch=0):
+    """
+    Construct filename templates for gaze-pipeline outputs.
+
+    Parameters
+    ----------
+    pupil_tag : str
+        Tag for the pupil detection algorithm (used in pupil filename).
+    eyelid_tag : str or None
+        Reserved for eyelid-related tagging (not currently used).
+    pupil_detrend_tag : str or None
+        Detrending tag for pupil processing.
+    calibration_marker_tag : str or None
+        Marker tag used for calibration.
+    calibration_split_tag : str or None
+        Split tag for calibration.
+    calibration_cluster_tag : str or None
+        Clustering tag for calibration markers.
+    validation_marker_tag, validation_split_tag, validation_cluster_tag : str or None
+        Tags used for validation marker detection and processing.
+    calibration_tag : str
+        Calibration algorithm tag used in gaze filename.
+    gaze_tag : str
+        Gaze mapping algorithm tag.
+    error_tag : str
+        Error-processing tag used in error filename.
+    calibration_epoch : int
+        Epoch index used in calibration filename hashing.
+    eye : str or None
+        Placeholder or format for eye side in filenames; defaults to '%s'.
+    fov_str : str or None
+        Field-of-view string inserted into error filename; defaults to '%s'.
+    validation_epoch : int
+        Epoch index used in validation/error filename.
+
+    Returns
+    -------
+    out : dict
+        Dictionary of filename templates with keys 'pupil_file', 'gaze_file', and
+        'error_file'. The templates include format placeholders for eye and fov
+        where appropriate.
+    """
         # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
     if fov_str is None:
         fov_str = '%s'
     if eye is None:
         eye = '%s'
+    if validation_checkerboard_size != '4x7':
+        validation_marker_tag.replace('4x7', validation_checkerboard_size)
+        
     calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
                                        pupil_tag, pupil_detrend_tag] if x is not None]
@@ -151,13 +232,6 @@ def make_file_strings(
     return out
 
 
-# input_hash = hash('-'.join([pipeline[x] for x in ['calibration_marker','calibration_filter',
-#                                                   'validation_marker','validation_filter',
-#                                                   'pupil','detrending',
-#                                                   ]]))
-
-
- 
 # # Slippage correction
 # pupil_detrend_path = f'pupil_detrended-%s-{pipeline['detrending']}.npz'
 # calibration_marker_path = f'markers-calibration-{calibration_marker_string}-epochall.npz' # epoch all - revisit?
@@ -166,100 +240,143 @@ def make_file_strings(
 # error_str = 'error_%s.npz'
 # gaze_str = 'gaze_%s.npz'
 
-class Session(MappedClass):
+class Session(object):
     """Representation of a VEDB recording session.
     
     Contains paths to all relevant files (world video, eye videos, etc.)
     and means to load them, as well as meta-data about the session.
     """
-    def __init__(self, 
-            folder=None, 
-            subject=None, 
-            date=None,
-            task=None, 
-            location=None, 
-            fov=None,
-            # Database bureaucracy
-            type='Session',
-            dbi=None, 
-            _id=None, 
-            _rev=None,
-            **kwargs):
+    def __init__(self, folder, clip_labels='native', clock='native'):
         """Class for a data collection session for vedb project
 
         """
-        self.type = 'Session'
+        # Check for existence of folder
+        if not isinstance(folder, pathlib.Path):
+            folder = pathlib.Path(folder)
+        # Check if folder is locally defined
+        if folder.parent == pathlib.Path('.'):
+            if folder.exists():
+                folder = folder.absolute()
+            else:
+                folder = pathlib.Path(BASE_PATH) / folder.name
+        if not folder.exists():
+            raise ValueError(f"Folder {folder.name} not found!")
+        # Check on files available in folder
+        missing_files = _check_paths(folder)
+        if (len(missing_files) > 0) & raise_error:
+            raise ValueError(f'Missing files: {missing_files}\n')
+        
         self.folder = folder
-        self.subject=subject
-        self.fov=fov
-        self.dbi = dbi
-        self._id = _id
-        self._rev = _rev
-        self.date = date
+        self.clock = clock
         self._base_path = BASE_PATH
         self._path = None
         self._paths = None
         self._features = None
         self._world_time = None
         self._recording_duration = self.world_time[-1] - self.world_time[0]
-        # Introspection
-        # Will be written to self.fpath (if defined)
-        self._data_fields = []
-        # Constructed on the fly and not saved to docdict
-        self._temp_fields = [
-            'path',
-            'paths',
-            'clips',
-            'datetime', 
-            'world_time', 
-            'recording_duration']
-        # Fields that are other database objects
-        self._db_fields = []
-        # This might be time consuming for large queries...
-        self.load_clips()
+        if clip_labels is not None:
+            self.load_clips(clip_labels)
 
-    def load_clips(self):
+    def load_clips(self, clip_labels='native'):
         clip_file = pathlib.Path(self.path) / f'{self.folder}.csv'
         if clip_file.exists():
-            self.clips = parse_csv(clip_file)
-        
-    def load_gaze_pipeline(self, pipeline='latest', is_verbose=0):
+            try:
+                self.clips = parse_csv(clip_file)
+            except:
+                print("Can't parse clips!")
+        else:
+            print("No clips defined!")
+        if clip_labels == 'native':
+            clip_labels = ('native', 'native')
+        loc_mapping, task_mapping = clip_labels
+        # Location mapping
+        if loc_mapping == 'native':
+            pass
+        else:
+            loc_mapping = utils.read_yaml(BASE_PATH / f'{loc_mapping}.yaml')
+            for j in range(len(self.clip)):
+                self.clips[j].location = loc_mapping[self.clips[j].location]
+        # Task mapping
+        if loc_mapping == 'native':
+            pass
+        else:
+            task_mapping = utils.read_yaml(BASE_PATH / f'{task_mapping}.yaml')
+            for j in range(len(self.clip)):
+                self.clips[j].task = task_mapping[self.clips[j].task]
+        for j in range(len(self.clips)):
+            self.clips[j].tag = f'{self.clips[j].location}:{self.clips[j].task}'
+
+    def load_gaze_pipeline(self, pipeline=None, clock='native'):
         """load all elements of a gaze pipeline
 
         Parameters
         ----------
-        pipeline : str, optional
-            tag (name) of pipeline, by default 'latest', which (medium intelligently)
-            finds latest greatest estimate of gaze
+        pipeline : dict, optional
+            dict of preprocessing step tags (strings), each of which identifies
+            how a step of preprocessing was handled. Default values are used if
+            `None`
         is_verbose : int or bool
             False or 0 : print nothing
             True or 1 : print whether each element was found
             2+ : print all above and database query results
         """
-        if self.dbi is None:
-            warnings.warn('self.dbi must be active database interface for this to work')
-            return None
-        # Get list of pipeline keys
-        pl = self.dbi.query(1, type='ParamDictionary', fn='vedb_gaze.pipelines.make_pipeline', tag=pipeline)
-        ple = load_pipeline_elements(self, dbi=self.dbi, is_verbose=is_verbose, **pl.params)
-        return ple
+        self.clock = clock 
+        if pipeline is None:
+            pipeline = pipeline_default
+        # Get field of view and validation checkerboard size from SESSION_INFO file
+        si = get_session_info(self.folder)
+        if si['val_4x7']:
+            validation_checkerboard_size = '4x7'
+        elif si['val_7x9']:
+            validation_checkerboard_size = '7x9'
+        else:
+            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+        self.gaze_paths = make_file_strings(pipeline, fov_str=f'{si["fov"]}', eye=None,
+                                            validation_checkerboard_size=validation_checkerboard_size)
 
-    def load_gaze(self, pipeline='latest', clock='native', time_idx=None):
+
+    def load_gaze(self, pipeline=None, eye='both', clock='native'):
         """Load estimate of gaze based on particular pipeline tag
+
+        See also Session.gaze and Session.load_gaze_pipeline()
 
         Parameters
         ----------
-        pipeline : str, optional
-            name of pipeline, by default 'latest', which (medium intelligently)
-            pulls latest estimate of gaze
+        pipeline : dict, optional
+            dict of preprocessing step tags (strings), each of which identifies
+            how a step of preprocessing was handled. Default values are used if
+            `None`
         clock : str, optional
             which timestamps gaze should have. Default is 'native', which means at ~120 hz 
-            (native eye camera temporal resolution). 'world' specifies that gaze should be
+            (native eye camera temporal resolution). 'world_time' specifies that gaze should be
             matched to nearest world timestamp (or averaged over a window according to
             `kwargs` that are passed on to `match_timepoints()`)
         """
-        ple = self.load_gaze_pipeline(pipeline=pipeline)
-        return ple['gaze']
+        # Get field of view and validation checkerboard size from SESSION_INFO file
+        si = get_session_info(self.folder)
+        if si['val_4x7']:
+            validation_checkerboard_size = '4x7'
+        elif si['val_7x9']:
+            validation_checkerboard_size = '7x9'
+        else:
+            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+        gaze_paths = make_file_strings(pipeline, fov_str=f'{si["fov"]}', eye=None,
+                                            validation_checkerboard_size=validation_checkerboard_size)
+                
+        gaze = dict(left=np.load(PROC_PATH / self.folder / gaze_paths['gaze_file']%'left'),
+                    right=np.load(PROC_PATH / self.folder / gaze_paths['gaze_file']%'right'))
+        if eye == 'left':
+            return gaze['left']
+        elif eye == 'right':
+            return gaze['right']
+        elif eye == 'both':
+            return gaze
+        elif eye == 'best':
+            if self.error['left'][WORKING] < self.error['right'][WORKING]:
+                return gaze['left']
+            else:
+                return gaze['right']
+        return
 
     def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
         """
@@ -394,7 +511,7 @@ class Session(MappedClass):
         return self._paths
     
     @classmethod
-    def from_folder(cls, folder, dbinterface=None, subject=None, raise_error=True, db_save=False, load_label_csv=True):
+    def from_folder(cls, folder, raise_error=True, load_label_csv=True):
         """Creates a new instance of this class from the given `docdict`.
         
         Parameters
@@ -425,14 +542,7 @@ class Session(MappedClass):
         missing_files = _check_paths(folder)
         if (len(missing_files) > 0) & raise_error:
             raise ValueError(f'Missing files: {missing_files}\n')
-        # Check for presence of folder in database if we are aiming to save session in database
-        if db_save:
-            check = dbinterface.query(type='Session', folder=folder.name)
-            if len(check) > 0:
-                print('SESSION FOUND IN DATABASE.')
-                return check[0]
-            elif len(check) > 1:
-                raise Exception('More than one database session found with this date!')                
+
         # VEDB specific things: folder name as date, csv file for task, location labels
         # look for session csv for vedb
             
@@ -446,8 +556,7 @@ class Session(MappedClass):
             date = None
             print('Folder name not parseable as a date')
 
-        ob.__init__(dbi=dbinterface,
-              subject=subject,
+        ob.__init__(
               folder=folder.name,
               date=date
               )
@@ -514,7 +623,7 @@ class SessionClip(object):
         if ':' in self.tag:
             return self.tag.split(':')[0]    
     
-    def load_gaze_pipeline(self, pipeline=pipeline_default, clock='native', eye=('left','right')):
+    def load_gaze_pipeline(self, pipeline=pipeline_default, clock='native'):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
         
         """
@@ -530,11 +639,12 @@ class SessionClip(object):
             self.load_gaze_pipeline()
         if self._pupil is None:
             self._pupil = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
-                               for lr, fname in self.gaze_dict['pupil'].items())
+                               for lr, fname in self.gaze_paths['pupil_file'].items())
             # Enumerate options here for clock
             if self.clock is not 'native':
+                this_time = getattr(self, this_time)
                 for e in self._pupil.keys():
-                    self._pupil[e] = match_time_points([dict(timestamp=self.world_time), self._pupil[e]])     
+                    self._pupil[e] = utils.match_time_points([dict(timestamp=this_time), self._pupil[e]])
         return self._pupil
     
     @property
@@ -543,12 +653,17 @@ class SessionClip(object):
             self.load_gaze_pipeline()
         if self._gaze is None:
             self._gaze = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
-                               for lr, fname in self.gaze_dict['gaze'].items())
+                               for lr, fname in self.gaze_paths['gaze_file'].items())
             # Enumerate options here for clock
             if self.clock is not 'native':
+                this_time = getattr(self, this_time)
                 for e in self._gaze.keys():
-                    self._gaze[e] = match_time_points([dict(timestamp=self.world_time), self._gaze[e]])                    
+                    self._gaze[e] = utils.match_time_points([dict(timestamp=this_time), self._gaze[e]])
         return self._gaze
+
+    @property
+    def gaze_best(self):
+        pass
 
     def binary(self, timestamps, comparison_type=('>=', '<'), pre=0, post=0):
         """Get binary index for this clip within `timestamps`
@@ -647,6 +762,8 @@ class SessionClip(object):
             time = world_time[self.binary(world_time)]
             return time
         elif data_type == 'gaze':
+            ses = Session(self.session)
+            gaze = ses.load_gaze()
             out = load_gaze(self.session, **kwargs)
             return self(out)
         elif data_type == 'odometry':
@@ -715,7 +832,6 @@ class SessionClip(object):
                             wspace=None,
                             eye_left_color=(1.0, 0.5, 0.0),  # orange
                             eye_right_color=(0.0, 0.5, 1.0),  # cyan
-                            session_info=SESSION_INFO,
                             raise_error=False,
                         ):
         """Make radical gaze animation"""
@@ -724,9 +840,8 @@ class SessionClip(object):
         global eye_right_frame    
         global eye_right_image
         eye_video_size = 400 # x 400, square
-        tmp = utils.arraydict_to_dictlist(session_info)
-        si_dict = dict((x['folder'], x) for x in tmp)
-        si = si_dict[self.session]
+        si = get_session_info(self.session)
+        
         try:
             ses = Session.from_folder(self.session, raise_error=raise_error)
             pl = PROC_PATH / ses.folder / (pupil_str%'left')
