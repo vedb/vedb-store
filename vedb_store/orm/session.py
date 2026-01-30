@@ -43,7 +43,7 @@ import numpy as np
 import copy
 import os
 
-from ..utils import get_frame_indices, get_time_split, SESSION_FIELDS, load_pipeline_elements, onoff_from_binary
+from ..utils import get_frame_indices, get_time_split, onoff_from_binary
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
@@ -129,7 +129,7 @@ OPTIONAL_FILES = [
 
 # Pipeline defaults
 pipeline_default = dict(
-                  pupil_tag='pylids_pupils_eyelids_v2',
+                  pupil_tag='pylids_pytorch_pupils_v1',
                   pupil_detrend_tag=None,
                   calibration_marker_tag='circles_halfres',
                   calibration_split_tag=None,
@@ -145,7 +145,7 @@ pipeline_default = dict(
 
 
 def make_file_strings(
-        pupil_tag='pylids_pupils_eyelids_v2',
+        pupil_tag='pylids_pytorch_pupils_v1',
         eyelid_tag=None,
         pupil_detrend_tag=None,
         calibration_marker_tag='circles_halfres',
@@ -154,9 +154,9 @@ def make_file_strings(
         validation_marker_tag='checkerboard_halfres_4x7squares',
         validation_split_tag=None, 
         validation_cluster_tag='cluster_checkerboards',
-        calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+        calibration_tag='monocular_tps_cv_cluster_median_conf40_cut3std',
         gaze_tag='default_mapper',
-        error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
+        error_tag='smooth_tps_cv_clust_med_outlier4std_conf40', 
         calibration_epoch=0,
         # Extra
         eye=None,
@@ -210,7 +210,8 @@ def make_file_strings(
     if eye is None:
         eye = '%s'
     if validation_checkerboard_size != '4x7':
-        validation_marker_tag.replace('4x7', validation_checkerboard_size)
+        validation_marker_tag = validation_marker_tag.replace('4x7', validation_checkerboard_size)
+    print(validation_marker_tag)
         
     calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
@@ -219,15 +220,16 @@ def make_file_strings(
     calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
     error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, pupil_detrend_tag, \
+                                       pupil_tag, eyelid_tag, pupil_detrend_tag, \
                                        calibration_tag, gaze_tag,
                                        validation_marker_tag, validation_split_tag, validation_cluster_tag, \
                                        ] if x is not None]
     error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    
     out = dict(
         pupil_file = f'pupil-{eye}-{pupil_tag}.npz',
         gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz',
-        error_file = f'error-%s-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
+        error_file = f'error-{eye}-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
         )
     return out
 
@@ -246,7 +248,7 @@ class Session(object):
     Contains paths to all relevant files (world video, eye videos, etc.)
     and means to load them, as well as meta-data about the session.
     """
-    def __init__(self, folder, clip_labels='native', clock='native'):
+    def __init__(self, folder, clip_labels='native', clock='native', raise_error=True):
         """Class for a data collection session for vedb project
 
         """
@@ -266,11 +268,16 @@ class Session(object):
         if (len(missing_files) > 0) & raise_error:
             raise ValueError(f'Missing files: {missing_files}\n')
         
-        self.folder = folder
+        self.folder = folder.name
         self.clock = clock
-        self._base_path = BASE_PATH
+        self.gaze_paths = None
+        self._base_path = folder.parent
         self._path = None
         self._paths = None
+        self._gaze = None
+        self._pupil = None
+        self._eyelids = None
+        self._error = None
         self._features = None
         self._world_time = None
         self._recording_duration = self.world_time[-1] - self.world_time[0]
@@ -294,17 +301,22 @@ class Session(object):
             pass
         else:
             loc_mapping = utils.read_yaml(BASE_PATH / f'{loc_mapping}.yaml')
-            for j in range(len(self.clip)):
-                self.clips[j].location = loc_mapping[self.clips[j].location]
         # Task mapping
         if loc_mapping == 'native':
             pass
         else:
             task_mapping = utils.read_yaml(BASE_PATH / f'{task_mapping}.yaml')
-            for j in range(len(self.clip)):
-                self.clips[j].task = task_mapping[self.clips[j].task]
         for j in range(len(self.clips)):
-            self.clips[j].tag = f'{self.clips[j].location}:{self.clips[j].task}'
+            if loc_mapping == 'native':
+                location = self.clips[j].location
+            else:
+                location = loc_mapping[self.clips[j].location]
+            if task_mapping == 'native':
+                task = self.clips[j].task
+            else:
+                task = task_mapping[self.clips[j].task]
+            self.clips[j].tag = f'{location}:{task}'
+        
 
     def load_gaze_pipeline(self, pipeline=None, clock='native'):
         """load all elements of a gaze pipeline
@@ -331,7 +343,7 @@ class Session(object):
             validation_checkerboard_size = '7x9'
         else:
             raise ValueError('Could not figure out what size validation checkerboard was for this session!')
-        self.gaze_paths = make_file_strings(pipeline, fov_str=f'{si["fov"]}', eye=None,
+        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=None,
                                             validation_checkerboard_size=validation_checkerboard_size)
 
 
@@ -360,11 +372,19 @@ class Session(object):
             validation_checkerboard_size = '7x9'
         else:
             raise ValueError('Could not figure out what size validation checkerboard was for this session!')
-        gaze_paths = make_file_strings(pipeline, fov_str=f'{si["fov"]}', eye=None,
+        if pipeline is None:
+            pipeline = pipeline_default
+        gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=None,
                                             validation_checkerboard_size=validation_checkerboard_size)
                 
-        gaze = dict(left=np.load(PROC_PATH / self.folder / gaze_paths['gaze_file']%'left'),
-                    right=np.load(PROC_PATH / self.folder / gaze_paths['gaze_file']%'right'))
+        gaze = dict(left=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze_file']%'left'))),
+                    right=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze_file']%'right'))))
+        # resample to `clock`
+        if clock != 'native':
+            this_time = getattr(self, clock)
+            for e in gaze.keys():
+                gaze[e] = utils.match_time_points([dict(timestamp=this_time), gaze[e]])
+
         if eye == 'left':
             return gaze['left']
         elif eye == 'right':
@@ -372,12 +392,32 @@ class Session(object):
         elif eye == 'both':
             return gaze
         elif eye == 'best':
-            if self.error['left'][WORKING] < self.error['right'][WORKING]:
+            if self.error['left']['gaze_err_weighted'] < self.error['right']['gaze_err_weighted']:
                 return gaze['left']
             else:
                 return gaze['right']
         return
-
+    
+    @property
+    def gaze(self):
+        """Always native eye video time for both eyes, if you want other clocks use Session.load_gaze()"""
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
+        if self._gaze is None:
+            self._gaze = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['gaze_file']%lr)))) \
+                               for lr in ['left','right'])
+        return self._gaze
+    
+    @property
+    def error(self):
+        """Only for epoch 1 if it exists, else nan"""
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
+        if self._error is None:
+            self._error = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['error_file']%lr)))) \
+                               for lr in ['left','right'])
+        return self._error
+    
     def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
         """
         Parameters
@@ -486,7 +526,7 @@ class Session(object):
             to_find = [('world.mp4','worldPrivate.mp4'),  ('eye1.mp4', 'eye1_blur.mp4'), ('eye0.mp4','eye0_blur.mp4'), 'odometry.pldata']
             names = ['world_camera', 'eye_left', 'eye_right', 'odometry']
             _paths = {}
-            base_path = self._resolve_sync_dir(self.path)
+            base_path = self.path # TODO: re-implement? self._resolve_sync_dir(self.path)
             for fnm, nm in zip(to_find, names):
                 if isinstance(fnm, tuple):
                     ff = 'no_file.nope'
@@ -630,7 +670,7 @@ class SessionClip(object):
         self.clock = clock 
         if self.session is None:
             return None
-        self.gaze_paths = make_file_strings(pipeline)
+        self.gaze_paths = make_file_strings(**pipeline)
         #self._error = dict((lr, np.load(self.gaze_paths['gaze']%lr)) for lr in eye)
 
     @property
@@ -641,7 +681,7 @@ class SessionClip(object):
             self._pupil = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
                                for lr, fname in self.gaze_paths['pupil_file'].items())
             # Enumerate options here for clock
-            if self.clock is not 'native':
+            if self.clock != 'native':
                 this_time = getattr(self, this_time)
                 for e in self._pupil.keys():
                     self._pupil[e] = utils.match_time_points([dict(timestamp=this_time), self._pupil[e]])
@@ -655,7 +695,7 @@ class SessionClip(object):
             self._gaze = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
                                for lr, fname in self.gaze_paths['gaze_file'].items())
             # Enumerate options here for clock
-            if self.clock is not 'native':
+            if self.clock != 'native':
                 this_time = getattr(self, this_time)
                 for e in self._gaze.keys():
                     self._gaze[e] = utils.match_time_points([dict(timestamp=this_time), self._gaze[e]])
@@ -763,9 +803,8 @@ class SessionClip(object):
             return time
         elif data_type == 'gaze':
             ses = Session(self.session)
-            gaze = ses.load_gaze()
-            out = load_gaze(self.session, **kwargs)
-            return self(out)
+            gaze = ses.load_gaze(**kwargs)
+            return self(gaze)
         elif data_type == 'odometry':
             odo = file_io.load_msgpack((BASE_PATH / self.session / 'odometry.pldata'))
             odo = utils.dictlist_to_arraydict(odo)
