@@ -429,9 +429,9 @@ def time_to_index(onsets_offsets, timeline, index_type='integer'):
         onsets_offsets = np.asarray(onsets_offsets)
     out = np.zeros(onsets_offsets.shape, dtype=int)
     for ct, (on, off) in enumerate(onsets_offsets):
-        i = np.flatnonzero(timeline > on)[0]
+        i = np.flatnonzero(timeline >= on)[0]
         j = np.flatnonzero(timeline < off)[-1]
-        out[ct] = [int(i), int(j)]
+        out[ct] = [int(i), int(j)+1]
     if index_type=='boolean':
         out = onoff_to_binary(out, len(timeline))
     return out
