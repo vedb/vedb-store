@@ -1252,6 +1252,23 @@ class ClipList(object):
         b = cliplist.binary(self.native_timestamps)
         return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
 
+    def __and__(self, cliplist):
+        new_clips = []
+        #chk = cliplist.binary(self.native_timestamps)
+        for clip in self:
+            onset_btw = any([(other_clip.onset >= clip.onset) &\
+                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
+            offset_btw = any([(other_clip.offset >= clip.onset) &\
+                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
+            if onset_btw | offset_btw:
+                new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
+        onoffs = [(x.onset, x.offset) for x in new_clips]
+        tags = [x.tag for x in new_clips]
+        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+
+
     def __len__(self):
         return(len(self.clip_list))
     
