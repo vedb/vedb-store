@@ -48,7 +48,7 @@ from ..utils import get_frame_indices, get_time_split, onoff_from_binary
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
 SESSION_INFO = dict(np.load(BASE_PATH / 'session_info.npz'))
-
+EYE_PRIVACY_SETTING = '' # '_blur'
 
 import file_io
 import matplotlib.pyplot as plt
@@ -227,7 +227,7 @@ def make_file_strings(
     error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
     
     out = dict(
-        pupil_file = f'pupil-{eye}-{pupil_tag}.npz',
+        pupil_file = f'pupil_detection-{eye}-{pupil_tag}.npz',
         gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz',
         error_file = f'error-{eye}-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
         )
@@ -598,7 +598,6 @@ class Session(object):
 
         ob.__init__(
               folder=folder.name,
-              date=date
               )
         
         return ob
@@ -814,7 +813,7 @@ class SessionClip(object):
             return self(odo)
         elif data_type in ('eye_left', 'eye_right'):
             lr = '1' if 'left' in data_type else '0'
-            fname = BASE_PATH / self.session / f'eye{lr}_blur.mp4'
+            fname = BASE_PATH / self.session / f'eye{lr}{EYE_PRIVACY_SETTING}.mp4'
             ftime = BASE_PATH / self.session / f'eye{lr}_timestamps_0start.npy'
             data_time = np.load(ftime)
             data = file_io.load_video(fname, frames=self.indices(data_time), **kwargs)
@@ -1097,8 +1096,11 @@ class SessionClip(object):
 
             anim = animation.FuncAnimation(fig, animate, init_func=init, frames=n_frames, interval=1/fps * 1000, blit=True)
         except:
-            eye_left_vid.VideoObj.release()
-            eye_right_vid.VideoObj.release()
+            try:
+                eye_left_vid.VideoObj.release()
+                eye_right_vid.VideoObj.release()
+            except:
+                pass
             raise
         return anim
 
