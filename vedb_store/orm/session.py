@@ -12,9 +12,13 @@ temporal clips within sessions. Main classes and functions include
 - SessionClip
     Represents a labeled time interval within a session and provides
     methods to slice, sample, and visualize data for that interval.
+- SessionClipList
+    Container for multiple SessionClip instances WITHIN A SINGLE
+    SESSION with logical operations and conversion utilities.
 - ClipList
-    Container for multiple SessionClip instances with logical
-    operations and conversion utilities.
+    Container for multiple SessionClip instances ACROSS sessions.
+    These are each meant to constitute a sample of VEDB to be 
+    analyzed. 
 
 Notes
 -----
@@ -47,7 +51,9 @@ from ..utils import get_frame_indices, get_time_split, onoff_from_binary
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
+SAMPLE_PATH = pathlib.Path(options.config.get('paths', 'sample_directory')).expanduser()
 SESSION_INFO = dict(np.load(BASE_PATH / 'session_info.npz'))
+SESSION_ERROR = dict(np.load(BASE_PATH / 'session_error.npz'))
 EYE_PRIVACY_SETTING = '' # '_blur'
 
 import file_io
@@ -100,7 +106,26 @@ def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
     pt_h = ax.scatter(ellipse["center"][0], ellipse["center"][1], color=center_color)
     return patch_h, pt_h
 
-
+def unique(seq, idfun=None): 
+    """Returns only unique values in a list (with order preserved).
+    (idfun can be defined to select particular values??)
+    
+    Stolen from the internets 11.29.11
+    """
+    # order preserving
+    if idfun is None:
+        def idfun(x): return x
+    seen = {}
+    result = []
+    for item in seq:
+        marker = idfun(item)
+        if marker in seen: 
+            seen[marker]+=1
+            continue
+        else:
+            seen[marker] = 1
+            result.append(item)         
+    return result, seen
 
 REQUIRED_FILES = [
     'accel.pldata',
@@ -211,7 +236,7 @@ def make_file_strings(
         eye = '%s'
     if validation_checkerboard_size != '4x7':
         validation_marker_tag = validation_marker_tag.replace('4x7', validation_checkerboard_size)
-    print(validation_marker_tag)
+    #print(validation_marker_tag)
         
     calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
@@ -318,7 +343,7 @@ class Session(object):
             self.clips[j].tag = f'{location}:{task}'
         
 
-    def load_gaze_pipeline(self, pipeline=None, clock='native'):
+    def load_gaze_pipeline(self, pipeline=None, clock='native', validation_epoch=0, eye=None):
         """load all elements of a gaze pipeline
 
         Parameters
@@ -343,7 +368,7 @@ class Session(object):
             validation_checkerboard_size = '7x9'
         else:
             raise ValueError('Could not figure out what size validation checkerboard was for this session!')
-        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=None,
+        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=eye, validation_epoch=validation_epoch,
                                             validation_checkerboard_size=validation_checkerboard_size)
 
 
@@ -472,7 +497,7 @@ class Session(object):
 
     def get_video_handle(self, stream):
         """Return an opencv """
-        return file_io.VideoCapture(self.paths[stream][1])
+        return file_io.VideoCapture(str(self.paths[stream][1]))
     
     def get_video_time(self, stream):
         return np.load(self.paths[stream][0])
@@ -662,15 +687,52 @@ class SessionClip(object):
         if ':' in self.tag:
             return self.tag.split(':')[0]    
     
-    def load_gaze_pipeline(self, pipeline=pipeline_default, clock='native'):
+    def load_gaze_pipeline(self, pipeline=None, clock='native', eye=None, validation_epoch=0):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
         
         """
         self.clock = clock 
         if self.session is None:
             return None
-        self.gaze_paths = make_file_strings(**pipeline)
+        if pipeline is None:
+            pipeline=pipeline_default
+        # Get field of view and validation checkerboard size from SESSION_INFO file
+        si = get_session_info(self.session)
+        if si['val_4x7']:
+            validation_checkerboard_size = '4x7'
+        elif si['val_7x9']:
+            validation_checkerboard_size = '7x9'
+        else:
+            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+
+        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=eye, validation_epoch=validation_epoch,
+                                            validation_checkerboard_size=validation_checkerboard_size)
+
         #self._error = dict((lr, np.load(self.gaze_paths['gaze']%lr)) for lr in eye)
+
+    def quickshow(self, n=5, buffer=0.05, with_gaze_box=True, axs=None):
+        if self.session is None:
+            raise ValueError('Must have session defined to work.')
+        ses = Session(self.session)
+        st, fin = self.indices(ses.world_time)
+        dur = fin - st
+        # Allow a buffer at start and end
+        st = int(np.round(st + dur * buffer))
+        fin = int(np.round(fin - dur * buffer))
+        ii = np.round(np.linspace(st, fin, n)).astype(int)
+        samples = []
+        for i in ii:
+            # TO DO: incorporate option for gaze-centered
+            img = ses.load('world_camera', size=0.25, frame_idx=(i, ii+1))[1][0]
+            samples.append(img)
+        if axs is None:
+            ar = 4/3
+            scale = 2
+            fig, axs = plt.subplots(1,n, figsize=(n*scale*ar, scale))
+        for img, ax in zip(samples, axs.flatten()):
+            ax.imshow(img)
+            ax.axis('off')
+            # Show gaze rect
 
     @property
     def pupil(self):
@@ -683,7 +745,7 @@ class SessionClip(object):
             if self.clock != 'native':
                 this_time = getattr(self, this_time)
                 for e in self._pupil.keys():
-                    self._pupil[e] = utils.match_time_points([dict(timestamp=this_time), self._pupil[e]])
+                    self._pupil[e] = utils.match_time_points(dict(timestamp=this_time), self._pupil[e])
         return self._pupil
     
     @property
@@ -691,13 +753,17 @@ class SessionClip(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._gaze is None:
-            self._gaze = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
-                               for lr, fname in self.gaze_paths['gaze_file'].items())
+            self._gaze = dict((lr, dict(np.load(PROC_PATH / self.session / (self.gaze_paths['gaze_file']%lr)))) \
+                               for lr in ['left','right'])
             # Enumerate options here for clock
             if self.clock != 'native':
-                this_time = getattr(self, this_time)
+                if self.clock == 'world_time':
+                    this_time = self.load('world_time')
+                else:
+                    raise NotImplementedError("can only handle 'native' and 'world_time' for clocks so far")
+                #this_time = getattr(self, this_time)
                 for e in self._gaze.keys():
-                    self._gaze[e] = utils.match_time_points([dict(timestamp=this_time), self._gaze[e]])
+                    self._gaze[e] = utils.match_time_points(dict(timestamp=this_time), self._gaze[e])
         return self._gaze
 
     @property
@@ -840,6 +906,7 @@ class SessionClip(object):
         start_times += self.onset
         output = np.array([start_times, start_times+sample_duration]).T
         return [SessionClip(*times, tag=self.tag, session=self.session) for times in output]
+
     def shade_bg(self, ax=None, fcol=(.9, .9, .9), yl=None, vert=False, zorder=-1):
         """Shade in xtick grid (every other tick mark is gray/white)"""
         if ax is None:
@@ -900,7 +967,7 @@ class SessionClip(object):
                 eye_right_time = np.load(ertf)
                 eye_right_vid = ses.get_video_handle('eye_right')
             
-            _, vh, vw, _ = file_io.list_array_shapes(ses.paths['world_camera'][1])
+            _, vh, vw, _ = file_io.list_array_shapes(str(ses.paths['world_camera'][1]))
             n_frames = len(self(dict(timestamp=ses.world_time))['timestamp'])
             #frame = world[0]
             rect_width = rect_size[0] / vw
@@ -982,10 +1049,12 @@ class SessionClip(object):
                                         ax=ax_eye_right)
                 
             ax_eye_left.axis([1, 0, 1, 0]) # [0,1, 0, 1]
+            #ax_eye_left.axis([0, 1, 0, 1]) # [0,1, 0, 1]
             ax_eye_left.set_xticks([])
             ax_eye_left.set_yticks([])
             
-            ax_eye_right.axis([0, 1, 0, 1]) #[1, 0, 1, 0]
+            ax_eye_right.axis([1, 0, 1, 0]) # [0,1, 0, 1]
+            #ax_eye_right.axis([0, 1, 0, 1]) #[1, 0, 1, 0]
             ax_eye_right.set_xticks([])
             ax_eye_right.set_yticks([])
 
@@ -1112,7 +1181,7 @@ class SessionClip(object):
                )
     
 
-class ClipList(object):
+class SessionClipList(object):
     def __init__(self, onsets_offsets, native_timestamps, session=None, tags=None):
         """List of clips
         
@@ -1141,7 +1210,7 @@ class ClipList(object):
         """Return binary version of this list over full duration of 
         `native_timestamps`
         
-        i.e., convert this ClipList to a vector of True values for native 
+        i.e., convert this SessionClipList to a vector of True values for native 
         timestamps *during* clips and False values for native timestamps 
         *outside* of clips.
         """
@@ -1176,7 +1245,7 @@ class ClipList(object):
         """Durations in seconds"""
         onoff_times = self.times(include_duration=True)
         onoffs_filtered = [x for x in onoff_times if (x[2] > min_duration) and (x[2]  < max_duration)]
-        return ClipList(onoffs_filtered, self.native_timestamps, session=self.session, tags=self.tags)
+        return SessionClipList(onoffs_filtered, self.native_timestamps, session=self.session, tags=self.tags)
 
     def dilate(self, pre=0, post=0, merge=False):
         """dilate time for each clip. Times in seconds.
@@ -1184,7 +1253,7 @@ class ClipList(object):
         """
         if merge:
             ii = self.binary(pre=pre, post=post)
-            out = ClipList.from_binary(ii, self.native_timestamps, session=self.session)
+            out = SessionClipList.from_binary(ii, self.native_timestamps, session=self.session)
         else:
             # Don't overwrite self
             mn = self.native_timestamps.min()
@@ -1192,11 +1261,11 @@ class ClipList(object):
             onoff_clips = [(x.dilate(pre=pre, post=post, tlimits=(mn, mx), )) \
                             for x in self]
             onoff_times = [(x.onset, x.offset) for x in onoff_clips]
-            out = ClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
+            out = SessionClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
         return out
 
     def invert(self, **kwargs):
-        out = ClipList.from_binary(~self.binary(**kwargs), self.native_timestamps, session=self.session)
+        out = SessionClipList.from_binary(~self.binary(**kwargs), self.native_timestamps, session=self.session)
         # Kill any 1-frame clips
         out.clip_list = [clip for clip in out if clip.duration > 0]
         return out
@@ -1226,7 +1295,7 @@ class ClipList(object):
         # Require that all clips are from same session. For now, clip lists must tbe same session.
         session = list_of_clips[0].session
         assert all([x.session == session for x in list_of_clips]),\
-              'SessionClip objects in ClipList must be from same session!'
+              'SessionClip objects in SessionClipList must be from same session!'
         onoffs = [(x.onset, x.offset) for x in list_of_clips]
         tags = [x.tag for x in list_of_clips]
         ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
@@ -1246,13 +1315,13 @@ class ClipList(object):
             return []
         onoffs = [(x.onset, x.offset) for x in new_clips]
         tags = [x.tag for x in new_clips]
-        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+        return SessionClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
         #return ClipList.from_binary(bb, self.native_timestamps, self.session)
 
     def __add__(self, cliplist):
         a = self.binary(self.native_timestamps)
         b = cliplist.binary(self.native_timestamps)
-        return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+        return SessionClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
 
     def __and__(self, cliplist):
         new_clips = []
@@ -1268,7 +1337,7 @@ class ClipList(object):
             return []
         onoffs = [(x.onset, x.offset) for x in new_clips]
         tags = [x.tag for x in new_clips]
-        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+        return SessionClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
 
 
     def __len__(self):
@@ -1286,6 +1355,161 @@ class ClipList(object):
     #     ob.__init([c.indices(native_timestamps) for c in clip_list], native_timestamps, clip_list[0].session)
     #     return ob
 
+
+class ClipList(object):
+    def __init__(self, clips, name='MyClipList', load_gaze_centered=False):
+        """List of clips from potentially disparate sessions
+        
+        all times passed to this and its methods must be normalized to session start
+        i.e. starting when the first data stream for a session came online.
+        
+        """
+        self.clip_list = clips
+        self.name = name
+        self.load_gaze_centered = load_gaze_centered
+
+    def dilate(self, pre=0, post=0):
+        """Dilate time for each clip. 
+
+        No notion of merging clips - all clips in a ClipList are treated as independent.
+        SessionClipList clips are known to be on the same clock wrt each other, and can
+        be merged.
+        
+        Parameters
+        ----------
+        pre : scalar
+            time to add before clip in seconds.
+        post : scalar
+            time to add before clip in seconds.
+        """
+        # Don't overwrite self
+        mn = self.native_timestamps.min()
+        mx = self.native_timestamps.max()
+        onoff_clips = [(x.dilate(pre=pre, post=post, tlimits=(mn, mx), )) \
+                        for x in self]
+        onoff_times = [(x.onset, x.offset) for x in onoff_clips]
+        out = ClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
+        return out    
+
+    @property
+    def durations(self):
+        return np.asarray([x.duration for x in self])
+
+    @property
+    def sessions(self):
+        return sorted(list(set([x.session for x in self])))
+
+    @property
+    def session_count(self):
+        return unique([x.session for x in self])[1]
+    
+    @property
+    def tasks(self):
+        return sorted(list(set([x.task for x in self])))
+    
+    @property
+    def task_count(self):
+        return unique([x.task for x in self])[1]
+
+    @property
+    def tasks(self):
+        return [x.task for x in self]
+
+    @property
+    def task_count(self):
+        _, task_count = unique(self.tasks)
+        return task_count
+
+    @property
+    def locations(self):
+        return sorted(list(set([x.location for x in self])))
+
+    @property
+    def location_count(self):
+        return unique([x.location for x in self])[1]
+    
+    @property
+    def tags(self):
+        return [x.tag for x in self]
+
+    def times(self, include_duration=False):
+            return np.asarray([clip.times(include_duration) for clip in self])
+
+    def filter_duration(self, min_duration=0, max_duration=np.inf):
+        """Durations in seconds"""
+        output_clips = [x for x in self if (x.duration > min_duration) and (x.duration  < max_duration)]
+        return ClipList(output_clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
+
+        
+    def __sub__(self, cliplist, new_name=None):
+        new_clips = []
+        if new_name is None:
+            new_name=self.name
+        #chk = cliplist.binary(self.native_timestamps)
+        all_sessions = sorted(list(set(self.sessions) | set(cliplist)))
+        for this_session in all_sessions:
+            clip_setA = [x for x in self if x.session==this_session]
+            clip_setB = [x for x in cliplist if x.session==this_session]
+            for clip in clip_setA:
+                onset_btw = any([(other_clip.onset >= clip.onset) &\
+                                (other_clip.onset <= clip.offset) for other_clip in cliplistB])
+                offset_btw = any([(other_clip.offset >= clip.onset) &\
+                                (other_clip.offset <= clip.offset) for other_clip in cliplistB])
+                if not onset_btw | offset_btw:
+                    new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
+        return ClipList(new_clips, name=new_name, load_gaze_centered=self.load_gaze_centered)
+
+    
+    def save(self, fname=None, path=SAMPLE_PATH):
+        if fname is None:
+            fname = f'{self.name}.npz'
+        fpath = path / fname
+        to_save = [dict((k, getattr(x, k)) for k in ['onset', 'offset', 'session','tag']) for x in self]
+        np.savez(fname, **utils.dictlist_to_arraydict(to_save))
+    
+    
+    @classmethod
+    def load(cls, fpath):
+        if not isinstance(fpath, pathlib.Path):
+            fpath = pathlib.Path(fpath)
+        ob = cls.__new__(cls)
+        cc = utils.arraydict_to_dictlist(dict(np.load(fpath, allow_pickle=True)))
+        ob.__init__([SessionClip(**c) for c in cc], name=fpath.name[:-3])
+        return ob
+
+    def __add__(self, cliplist):
+        pass
+        #a = self.binary(self.native_timestamps)
+        #b = cliplist.binary(self.native_timestamps)
+        #return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+
+    def __and__(self, cliplist):
+        new_clips = []
+        for clip in self:
+            onset_btw = any([(other_clip.onset >= clip.onset) &\
+                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
+            offset_btw = any([(other_clip.offset >= clip.onset) &\
+                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
+            if onset_btw | offset_btw:
+                new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
+        onoffs = [(x.onset, x.offset) for x in new_clips]
+        tags = [x.tag for x in new_clips]
+        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+
+
+    #def __len__(self):
+    #    return(len(self.clip_list))
+    
+    def __getitem__(self, i):
+        return self.clip_list[i]
+    
+    def __iter__(self):
+        return iter(self.clip_list)
+    
 
 def _clean_str(x): 
     return x.lower().strip().replace('_',' ')    
@@ -1396,3 +1620,5 @@ def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **
     # Add the patch to the Axes
     rh = ax.add_patch(rect)
     return rh
+
+
