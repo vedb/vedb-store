@@ -54,6 +54,8 @@ PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expandus
 SAMPLE_PATH = pathlib.Path(options.config.get('paths', 'sample_directory')).expanduser()
 SESSION_INFO = dict(np.load(BASE_PATH / 'session_info.npz'))
 SESSION_ERROR = dict(np.load(BASE_PATH / 'session_error.npz'))
+SESSION_ERROR_LIST = utils.arraydict_to_dictlist(SESSION_ERROR)
+SESSION_ERROR_DICT = dict((x['folder'], x) for x in SESSION_ERROR_LIST)
 EYE_PRIVACY_SETTING = '' # '_blur'
 
 import file_io
@@ -713,6 +715,8 @@ class SessionClip(object):
     def quickshow(self, n=5, buffer=0.05, with_gaze_box=True, axs=None):
         if self.session is None:
             raise ValueError('Must have session defined to work.')
+        ar = 4/3 # Questionable to hard code this
+        rect_size = (600, 600)
         ses = Session(self.session)
         st, fin = self.indices(ses.world_time)
         dur = fin - st
@@ -723,23 +727,34 @@ class SessionClip(object):
         samples = []
         for i in ii:
             # TO DO: incorporate option for gaze-centered
-            img = ses.load('world_camera', size=0.25, frame_idx=(i, ii+1))[1][0]
+            img = ses.load('world_camera', size=0.25, frame_idx=(i, i+1))[1][0]
             samples.append(img)
         if axs is None:
-            ar = 4/3
             scale = 2
-            fig, axs = plt.subplots(1,n, figsize=(n*scale*ar, scale))
-        for img, ax in zip(samples, axs.flatten()):
-            ax.imshow(img)
+            fig, axs = plt.subplots(1, n, figsize=(n * scale * ar, scale))
+            do_tight_layout = True
+        else:
+            do_tight_layout = False
+        if with_gaze_box:
+            gaze = utils.match_time_points(dict(timestamp=ses.world_time), self.gaze_best)
+            _, vh, vw, _ = file_io.list_array_shapes(str(ses.paths['world_camera'][1]))
+            rect_width = rect_size[0] / vw
+            rect_height = rect_size[1] / vh            
+        for j, img, ax in zip(ii, samples, axs.flatten()):
+            ax.imshow(img, extent=(0, 1, 1, 0), aspect='auto')
             ax.axis('off')
             # Show gaze rect
+            if with_gaze_box:
+                gaze_rect(gaze['norm_pos'][j], rect_width, rect_height, ax=ax, linewidth=2, edgecolor=(1, 0.95, 0))
+        if do_tight_layout:
+            plt.tight_layout()
 
     @property
     def pupil(self):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._pupil is None:
-            self._pupil = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
+            self._pupil = dict((lr, self(np.load(PROC_PATH / self.session / fname%lr))) \
                                for lr, fname in self.gaze_paths['pupil_file'].items())
             # Enumerate options here for clock
             if self.clock != 'native':
@@ -753,7 +768,7 @@ class SessionClip(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._gaze is None:
-            self._gaze = dict((lr, dict(np.load(PROC_PATH / self.session / (self.gaze_paths['gaze_file']%lr)))) \
+            self._gaze = dict((lr, self(dict(np.load(PROC_PATH / self.session / (self.gaze_paths['gaze_file']%lr))))) \
                                for lr in ['left','right'])
             # Enumerate options here for clock
             if self.clock != 'native':
@@ -768,7 +783,10 @@ class SessionClip(object):
 
     @property
     def gaze_best(self):
-        pass
+        if SESSION_ERROR_DICT[self.session]['error_left_epoch0'] < SESSION_ERROR_DICT[self.session]['error_right_epoch0']:
+            return self.gaze['left']
+        else:
+            return self.gaze['right']
 
     def binary(self, timestamps, comparison_type=('>=', '<'), pre=0, post=0):
         """Get binary index for this clip within `timestamps`
@@ -1446,15 +1464,15 @@ class ClipList(object):
         if new_name is None:
             new_name=self.name
         #chk = cliplist.binary(self.native_timestamps)
-        all_sessions = sorted(list(set(self.sessions) | set(cliplist)))
+        all_sessions = sorted(list(set(self.sessions) | set(cliplist.sessions)))
         for this_session in all_sessions:
             clip_setA = [x for x in self if x.session==this_session]
             clip_setB = [x for x in cliplist if x.session==this_session]
             for clip in clip_setA:
                 onset_btw = any([(other_clip.onset >= clip.onset) &\
-                                (other_clip.onset <= clip.offset) for other_clip in cliplistB])
+                                (other_clip.onset <= clip.offset) for other_clip in clip_setB])
                 offset_btw = any([(other_clip.offset >= clip.onset) &\
-                                (other_clip.offset <= clip.offset) for other_clip in cliplistB])
+                                (other_clip.offset <= clip.offset) for other_clip in clip_setB])
                 if not onset_btw | offset_btw:
                     new_clips.append(clip)
         if len(new_clips) == 0:
@@ -1501,8 +1519,8 @@ class ClipList(object):
         return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
 
 
-    #def __len__(self):
-    #    return(len(self.clip_list))
+    def __len__(self):
+       return(len(self.clip_list))
     
     def __getitem__(self, i):
         return self.clip_list[i]
