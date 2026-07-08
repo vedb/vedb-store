@@ -1,11 +1,11 @@
-name: vedb_store
+name: vedb_analysis
 channels:
   - anaconda
   - conda-forge
   - auto 
   - vedb
 dependencies:
-  - python=3.8
+  - python=3.10
   - numpy
   - scipy
   - matplotlib
@@ -20,9 +20,9 @@ dependencies:
   - appdirs
   - python-couchdb
   - opencv=4.2.0
-  - msgpack-python=0.6.2
+  - msgpack-python
   - pip
   - pip:
-    - git+https://github.com/vedb/file_io@main
-    - git+https://github.com/vedb/docdb_lite@main
-    - git+https://github.com/vedb/vedb-store@devel
+    - git+https://github.com/piecesofmindlab/file_io@main
+    - git+https://github.com/vedb/vedb-gaze@main
+    - git+https://github.com/vedb/vedb-store@main

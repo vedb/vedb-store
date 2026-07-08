@@ -1,3 +1,39 @@
+"""vedb_store.orm.session
+=========================
+
+Utilities for representing and working with VEDB recording sessions.
+
+This module provides classes and helpers to manage session data and
+temporal clips within sessions. Main classes and functions include
+
+- Session
+    Representation of a VEDB recording session. Methods load data
+    streams, manage file paths, and interface with gaze pipelines.
+- SessionClip
+    Represents a labeled time interval within a session and provides
+    methods to slice, sample, and visualize data for that interval.
+- SessionClipList
+    Container for multiple SessionClip instances WITHIN A SINGLE
+    SESSION with logical operations and conversion utilities.
+- ClipList
+    Container for multiple SessionClip instances ACROSS sessions.
+    These are each meant to constitute a sample of VEDB to be 
+    analyzed. 
+
+Notes
+-----
+Timestamps used throughout are typically zero-referenced to the
+first frame of the world video (world_timestamps_0start.npy). Many
+functions expect numpy arrays of timestamps and return time-indexed
+slices of data.
+
+Examples
+--------
+>>> from vedb_store.orm.session import Session
+>>> s = Session.from_folder('/path/to/session')
+>>> tt, frames = s.load('world_camera', time_idx=(0, 5))
+"""
+
 from .mappedclass import MappedClass
 from .. import utils
 from .. import options
@@ -11,34 +47,55 @@ import numpy as np
 import copy
 import os
 
-from ..utils import get_frame_indices, get_time_split, SESSION_FIELDS, load_pipeline_elements, onoff_from_binary
+from ..utils import get_frame_indices, get_time_split, onoff_from_binary
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
-SESSION_INFO = dict(np.load(BASE_PATH / 'session_info_wip.npz'))
-
+SAMPLE_PATH = pathlib.Path(options.config.get('paths', 'sample_directory')).expanduser()
+SESSION_INFO = dict(np.load(BASE_PATH / 'session_info.npz'))
+SESSION_ERROR = dict(np.load(BASE_PATH / 'session_error.npz'))
+SESSION_ERROR_LIST = utils.arraydict_to_dictlist(SESSION_ERROR)
+SESSION_ERROR_DICT = dict((x['folder'], x) for x in SESSION_ERROR_LIST)
+EYE_PRIVACY_SETTING = '' # '_blur'
 
 import file_io
-#from vedb_gaze.visualization import show_ellipse
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib import animation, patches, colors, gridspec
 
+
+def get_session_info(session, session_info=SESSION_INFO):   
+    tmp = utils.arraydict_to_dictlist(session_info)
+    si_dict = dict((x['folder'], x) for x in tmp)
+    si = si_dict[session]
+    return si
+
 def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
-    """Show opencv ellipse in matplotlib, optionally with image underlay
+    """Show an OpenCV-style ellipse on a Matplotlib axis, optionally with an image underlay.
 
     Parameters
     ----------
     ellipse : dict
-        dict of ellipse parameters derived from opencv, with fields:
-        * center: tuple (x, y)
-        * axes: tuple (x length, y length)
-        * angle: scalar, in degrees
-    img : array
-        underlay image to display
-    ax : matplotlib axis
-        axis into which to plot ellipse
-    kwargs : passed to matplotlib.patches.Ellipse
+        Ellipse parameters in OpenCV format with keys:
+        - 'center' : tuple of float (x, y)
+        - 'axes' : tuple of float (width, height) lengths of the ellipse axes
+        - 'angle' : float, rotation angle in degrees
+    img : array_like, optional
+        Image to display as a background under the ellipse. If ``None``, no
+        image is shown. Default is ``None``.
+    ax : matplotlib.axes.Axes, optional
+        Axes in which to plot. If ``None``, a new figure and axes are created.
+    center_color : str or tuple, optional
+        Color for the ellipse center marker. Default is ``'r'``.
+    **kwargs : dict, optional
+        Additional keyword arguments passed to ``matplotlib.patches.Ellipse``.
+
+    Returns
+    -------
+    tuple
+        ``(patch_h, pt_h)`` where ``patch_h`` is the :class:`matplotlib.patches.Ellipse`
+        instance added to the axes and ``pt_h`` is the scatter handle for the
+        ellipse center.
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -51,7 +108,26 @@ def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
     pt_h = ax.scatter(ellipse["center"][0], ellipse["center"][1], color=center_color)
     return patch_h, pt_h
 
-
+def unique(seq, idfun=None): 
+    """Returns only unique values in a list (with order preserved).
+    (idfun can be defined to select particular values??)
+    
+    Stolen from the internets 11.29.11
+    """
+    # order preserving
+    if idfun is None:
+        def idfun(x): return x
+    seen = {}
+    result = []
+    for item in seq:
+        marker = idfun(item)
+        if marker in seen: 
+            seen[marker]+=1
+            continue
+        else:
+            seen[marker] = 1
+            result.append(item)         
+    return result, seen
 
 REQUIRED_FILES = [
     'accel.pldata',
@@ -79,21 +155,8 @@ OPTIONAL_FILES = [
     ]
 
 # Pipeline defaults
-# pipeline_default = dict(
-#     calibration_marker = 'find_concentric_circles-circles_halfres',
-#     calibration_split = 'split_circles',
-#     calibration_cluster = 'cluster_circles',
-#     validation_marker = 'find_checkerboards-checkerboard_halfres_%ssquares',
-#     validation_split = 'split_checkerboards',
-#     validation_cluster = 'cluster_checkerboards',
-#     pupil = 'pylids_eyelids_pupils_v2',
-#     pupil_detrending = 'estimate_slippage-full_eyelid_shape',
-#     calibration = 'monocular_tps_cv_cluster_median_conf75_cut3std', # monocular_tps_default'
-#     gaze_mapping = 'default_mapper', 
-#     error = '',
-# )
 pipeline_default = dict(
-                  pupil_tag='pylids_pupils_eyelids_v2',
+                  pupil_tag='pylids_pytorch_pupils_v1',
                   pupil_detrend_tag=None,
                   calibration_marker_tag='circles_halfres',
                   calibration_split_tag=None,
@@ -101,15 +164,15 @@ pipeline_default = dict(
                   validation_marker_tag='checkerboard_halfres_4x7squares',
                   validation_split_tag=None, 
                   validation_cluster_tag='cluster_checkerboards',
-                  calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+                  calibration_tag='monocular_tps_cv_cluster_median_conf40_cut3std',
                   gaze_tag='default_mapper',
-                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
+                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf40', 
                   calibration_epoch=0,
 )
 
 
 def make_file_strings(
-        pupil_tag='pylids_pupils_eyelids_v2',
+        pupil_tag='pylids_pytorch_pupils_v1',
         eyelid_tag=None,
         pupil_detrend_tag=None,
         calibration_marker_tag='circles_halfres',
@@ -118,19 +181,65 @@ def make_file_strings(
         validation_marker_tag='checkerboard_halfres_4x7squares',
         validation_split_tag=None, 
         validation_cluster_tag='cluster_checkerboards',
-        calibration_tag='monocular_tps_cv_cluster_median_conf75_cut3std',
+        calibration_tag='monocular_tps_cv_cluster_median_conf40_cut3std',
         gaze_tag='default_mapper',
-        error_tag='smooth_tps_cv_clust_med_outlier4std_conf75', 
+        error_tag='smooth_tps_cv_clust_med_outlier4std_conf40', 
         calibration_epoch=0,
         # Extra
         eye=None,
         fov_str=None,
+        validation_checkerboard_size = '4x7',
         validation_epoch=0):
+    """
+    Construct filename templates for gaze-pipeline outputs.
+
+    Parameters
+    ----------
+    pupil_tag : str
+        Tag for the pupil detection algorithm (used in pupil filename).
+    eyelid_tag : str or None
+        Reserved for eyelid-related tagging (not currently used).
+    pupil_detrend_tag : str or None
+        Detrending tag for pupil processing.
+    calibration_marker_tag : str or None
+        Marker tag used for calibration.
+    calibration_split_tag : str or None
+        Split tag for calibration.
+    calibration_cluster_tag : str or None
+        Clustering tag for calibration markers.
+    validation_marker_tag, validation_split_tag, validation_cluster_tag : str or None
+        Tags used for validation marker detection and processing.
+    calibration_tag : str
+        Calibration algorithm tag used in gaze filename.
+    gaze_tag : str
+        Gaze mapping algorithm tag.
+    error_tag : str
+        Error-processing tag used in error filename.
+    calibration_epoch : int
+        Epoch index used in calibration filename hashing.
+    eye : str or None
+        Placeholder or format for eye side in filenames; defaults to '%s'.
+    fov_str : str or None
+        Field-of-view string inserted into error filename; defaults to '%s'.
+    validation_epoch : int
+        Epoch index used in validation/error filename.
+
+    Returns
+    -------
+    out : dict
+        Dictionary of filename templates with keys 'pupil_file', 'gaze_file', and
+        'error_file'. The templates include format placeholders for eye and fov
+        where appropriate.
+    """
         # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
     if fov_str is None:
         fov_str = '%s'
     if eye is None:
         eye = '%s'
+    if validation_checkerboard_size != '4x7':
+        validation_marker_tag = validation_marker_tag.replace('4x7', validation_checkerboard_size)
+    #print(validation_marker_tag)
+        
     calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
                                        pupil_tag, pupil_detrend_tag] if x is not None]
@@ -138,26 +247,20 @@ def make_file_strings(
     calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
     error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
                                        calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, pupil_detrend_tag, \
+                                       pupil_tag, eyelid_tag, pupil_detrend_tag, \
                                        calibration_tag, gaze_tag,
                                        validation_marker_tag, validation_split_tag, validation_cluster_tag, \
                                        ] if x is not None]
     error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
+    
     out = dict(
-        pupil_file = f'pupil-{eye}-{pupil_tag}.npz',
+        pupil_file = f'pupil_detection-{eye}-{pupil_tag}.npz',
         gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz',
-        error_file = f'error-%s-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
+        error_file = f'error-{eye}-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
         )
     return out
 
 
-# input_hash = hash('-'.join([pipeline[x] for x in ['calibration_marker','calibration_filter',
-#                                                   'validation_marker','validation_filter',
-#                                                   'pupil','detrending',
-#                                                   ]]))
-
-
- 
 # # Slippage correction
 # pupil_detrend_path = f'pupil_detrended-%s-{pipeline['detrending']}.npz'
 # calibration_marker_path = f'markers-calibration-{calibration_marker_string}-epochall.npz' # epoch all - revisit?
@@ -166,101 +269,182 @@ def make_file_strings(
 # error_str = 'error_%s.npz'
 # gaze_str = 'gaze_%s.npz'
 
-class Session(MappedClass):
+class Session(object):
     """Representation of a VEDB recording session.
     
     Contains paths to all relevant files (world video, eye videos, etc.)
     and means to load them, as well as meta-data about the session.
     """
-    def __init__(self, 
-            folder=None, 
-            subject=None, 
-            date=None,
-            task=None, 
-            location=None, 
-            fov=None,
-            # Database bureaucracy
-            type='Session',
-            dbi=None, 
-            _id=None, 
-            _rev=None,
-            **kwargs):
+    def __init__(self, folder, clip_labels='native', clock='native', raise_error=True):
         """Class for a data collection session for vedb project
 
         """
-        self.type = 'Session'
-        self.folder = folder
-        self.subject=subject
-        self.fov=fov
-        self.dbi = dbi
-        self._id = _id
-        self._rev = _rev
-        self.date = date
-        self._base_path = BASE_PATH
+        # Check for existence of folder
+        if not isinstance(folder, pathlib.Path):
+            folder = pathlib.Path(folder)
+        # Check if folder is locally defined
+        if folder.parent == pathlib.Path('.'):
+            if folder.exists():
+                folder = folder.absolute()
+            else:
+                folder = pathlib.Path(BASE_PATH) / folder.name
+        if not folder.exists():
+            raise ValueError(f"Folder {folder.name} not found!")
+        # Check on files available in folder
+        missing_files = _check_paths(folder)
+        if (len(missing_files) > 0) & raise_error:
+            raise ValueError(f'Missing files: {missing_files}\n')
+        
+        self.folder = folder.name
+        self.clock = clock
+        self.gaze_paths = None
+        self._base_path = folder.parent
         self._path = None
         self._paths = None
+        self._gaze = None
+        self._pupil = None
+        self._eyelids = None
+        self._error = None
         self._features = None
         self._world_time = None
         self._recording_duration = self.world_time[-1] - self.world_time[0]
-        # Introspection
-        # Will be written to self.fpath (if defined)
-        self._data_fields = []
-        # Constructed on the fly and not saved to docdict
-        self._temp_fields = [
-            'path',
-            'paths',
-            'clips',
-            'datetime', 
-            'world_time', 
-            'recording_duration']
-        # Fields that are other database objects
-        self._db_fields = []
-        # This might be time consuming for large queries...
-        self.load_clips()
+        if clip_labels is not None:
+            self.load_clips(clip_labels)
 
-    def load_clips(self):
+    def load_clips(self, clip_labels='native'):
         clip_file = pathlib.Path(self.path) / f'{self.folder}.csv'
         if clip_file.exists():
-            self.clips = parse_csv(clip_file)
+            try:
+                self.clips = parse_csv(clip_file)
+            except:
+                print("Can't parse clips!")
+        else:
+            print("No clips defined!")
+        if clip_labels == 'native':
+            clip_labels = ('native', 'native')
+        loc_mapping, task_mapping = clip_labels
+        # Location mapping
+        if loc_mapping == 'native':
+            pass
+        else:
+            loc_mapping = utils.read_yaml(BASE_PATH / f'{loc_mapping}.yaml')
+        # Task mapping
+        if loc_mapping == 'native':
+            pass
+        else:
+            task_mapping = utils.read_yaml(BASE_PATH / f'{task_mapping}.yaml')
+        for j in range(len(self.clips)):
+            if loc_mapping == 'native':
+                location = self.clips[j].location
+            else:
+                location = loc_mapping[self.clips[j].location]
+            if task_mapping == 'native':
+                task = self.clips[j].task
+            else:
+                task = task_mapping[self.clips[j].task]
+            self.clips[j].tag = f'{location}:{task}'
         
-    def load_gaze_pipeline(self, pipeline='latest', is_verbose=0):
+
+    def load_gaze_pipeline(self, pipeline=None, clock='native', validation_epoch=0, eye=None):
         """load all elements of a gaze pipeline
 
         Parameters
         ----------
-        pipeline : str, optional
-            tag (name) of pipeline, by default 'latest', which (medium intelligently)
-            finds latest greatest estimate of gaze
+        pipeline : dict, optional
+            dict of preprocessing step tags (strings), each of which identifies
+            how a step of preprocessing was handled. Default values are used if
+            `None`
         is_verbose : int or bool
             False or 0 : print nothing
             True or 1 : print whether each element was found
             2+ : print all above and database query results
         """
-        if self.dbi is None:
-            warnings.warn('self.dbi must be active database interface for this to work')
-            return None
-        # Get list of pipeline keys
-        pl = self.dbi.query(1, type='ParamDictionary', fn='vedb_gaze.pipelines.make_pipeline', tag=pipeline)
-        ple = load_pipeline_elements(self, dbi=self.dbi, is_verbose=is_verbose, **pl.params)
-        return ple
+        self.clock = clock 
+        if pipeline is None:
+            pipeline = pipeline_default
+        # Get field of view and validation checkerboard size from SESSION_INFO file
+        si = get_session_info(self.folder)
+        if si['val_4x7']:
+            validation_checkerboard_size = '4x7'
+        elif si['val_7x9']:
+            validation_checkerboard_size = '7x9'
+        else:
+            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=eye, validation_epoch=validation_epoch,
+                                            validation_checkerboard_size=validation_checkerboard_size)
 
-    def load_gaze(self, pipeline='latest', clock='native', time_idx=None):
+
+    def load_gaze(self, pipeline=None, eye='both', clock='native'):
         """Load estimate of gaze based on particular pipeline tag
+
+        See also Session.gaze and Session.load_gaze_pipeline()
 
         Parameters
         ----------
-        pipeline : str, optional
-            name of pipeline, by default 'latest', which (medium intelligently)
-            pulls latest estimate of gaze
+        pipeline : dict, optional
+            dict of preprocessing step tags (strings), each of which identifies
+            how a step of preprocessing was handled. Default values are used if
+            `None`
         clock : str, optional
             which timestamps gaze should have. Default is 'native', which means at ~120 hz 
-            (native eye camera temporal resolution). 'world' specifies that gaze should be
+            (native eye camera temporal resolution). 'world_time' specifies that gaze should be
             matched to nearest world timestamp (or averaged over a window according to
             `kwargs` that are passed on to `match_timepoints()`)
         """
-        ple = self.load_gaze_pipeline(pipeline=pipeline)
-        return ple['gaze']
+        # Get field of view and validation checkerboard size from SESSION_INFO file
+        si = get_session_info(self.folder)
+        if si['val_4x7']:
+            validation_checkerboard_size = '4x7'
+        elif si['val_7x9']:
+            validation_checkerboard_size = '7x9'
+        else:
+            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+        if pipeline is None:
+            pipeline = pipeline_default
+        gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=None,
+                                            validation_checkerboard_size=validation_checkerboard_size)
+                
+        gaze = dict(left=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze_file']%'left'))),
+                    right=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze_file']%'right'))))
+        # resample to `clock`
+        if clock != 'native':
+            this_time = getattr(self, clock)
+            for e in gaze.keys():
+                gaze[e] = utils.match_time_points([dict(timestamp=this_time), gaze[e]])
 
+        if eye == 'left':
+            return gaze['left']
+        elif eye == 'right':
+            return gaze['right']
+        elif eye == 'both':
+            return gaze
+        elif eye == 'best':
+            if self.error['left']['gaze_err_weighted'] < self.error['right']['gaze_err_weighted']:
+                return gaze['left']
+            else:
+                return gaze['right']
+        return
+    
+    @property
+    def gaze(self):
+        """Always native eye video time for both eyes, if you want other clocks use Session.load_gaze()"""
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
+        if self._gaze is None:
+            self._gaze = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['gaze_file']%lr)))) \
+                               for lr in ['left','right'])
+        return self._gaze
+    
+    @property
+    def error(self):
+        """Only for epoch 1 if it exists, else nan"""
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
+        if self._error is None:
+            self._error = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['error_file']%lr)))) \
+                               for lr in ['left','right'])
+        return self._error
+    
     def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
         """
         Parameters
@@ -315,7 +499,7 @@ class Session(MappedClass):
 
     def get_video_handle(self, stream):
         """Return an opencv """
-        return file_io.VideoCapture(self.paths[stream][1])
+        return file_io.VideoCapture(str(self.paths[stream][1]))
     
     def get_video_time(self, stream):
         return np.load(self.paths[stream][0])
@@ -369,7 +553,7 @@ class Session(MappedClass):
             to_find = [('world.mp4','worldPrivate.mp4'),  ('eye1.mp4', 'eye1_blur.mp4'), ('eye0.mp4','eye0_blur.mp4'), 'odometry.pldata']
             names = ['world_camera', 'eye_left', 'eye_right', 'odometry']
             _paths = {}
-            base_path = self._resolve_sync_dir(self.path)
+            base_path = self.path # TODO: re-implement? self._resolve_sync_dir(self.path)
             for fnm, nm in zip(to_find, names):
                 if isinstance(fnm, tuple):
                     ff = 'no_file.nope'
@@ -394,7 +578,7 @@ class Session(MappedClass):
         return self._paths
     
     @classmethod
-    def from_folder(cls, folder, dbinterface=None, subject=None, raise_error=True, db_save=False, load_label_csv=True):
+    def from_folder(cls, folder, raise_error=True, load_label_csv=True):
         """Creates a new instance of this class from the given `docdict`.
         
         Parameters
@@ -425,14 +609,7 @@ class Session(MappedClass):
         missing_files = _check_paths(folder)
         if (len(missing_files) > 0) & raise_error:
             raise ValueError(f'Missing files: {missing_files}\n')
-        # Check for presence of folder in database if we are aiming to save session in database
-        if db_save:
-            check = dbinterface.query(type='Session', folder=folder.name)
-            if len(check) > 0:
-                print('SESSION FOUND IN DATABASE.')
-                return check[0]
-            elif len(check) > 1:
-                raise Exception('More than one database session found with this date!')                
+
         # VEDB specific things: folder name as date, csv file for task, location labels
         # look for session csv for vedb
             
@@ -446,10 +623,8 @@ class Session(MappedClass):
             date = None
             print('Folder name not parseable as a date')
 
-        ob.__init__(dbi=dbinterface,
-              subject=subject,
+        ob.__init__(
               folder=folder.name,
-              date=date
               )
         
         return ob
@@ -514,27 +689,78 @@ class SessionClip(object):
         if ':' in self.tag:
             return self.tag.split(':')[0]    
     
-    def load_gaze_pipeline(self, pipeline=pipeline_default, clock='native', eye=('left','right')):
+    def load_gaze_pipeline(self, pipeline=None, clock='native', eye=None, validation_epoch=0):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
         
         """
         self.clock = clock 
         if self.session is None:
             return None
-        self.gaze_paths = make_file_strings(pipeline)
+        if pipeline is None:
+            pipeline=pipeline_default
+        # Get field of view and validation checkerboard size from SESSION_INFO file
+        si = get_session_info(self.session)
+        if si['val_4x7']:
+            validation_checkerboard_size = '4x7'
+        elif si['val_7x9']:
+            validation_checkerboard_size = '7x9'
+        else:
+            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+
+        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=eye, validation_epoch=validation_epoch,
+                                            validation_checkerboard_size=validation_checkerboard_size)
+
         #self._error = dict((lr, np.load(self.gaze_paths['gaze']%lr)) for lr in eye)
+
+    def quickshow(self, n=5, buffer=0.05, with_gaze_box=True, axs=None):
+        if self.session is None:
+            raise ValueError('Must have session defined to work.')
+        ar = 4/3 # Questionable to hard code this
+        rect_size = (600, 600)
+        ses = Session(self.session)
+        st, fin = self.indices(ses.world_time)
+        dur = fin - st
+        # Allow a buffer at start and end
+        st = int(np.round(st + dur * buffer))
+        fin = int(np.round(fin - dur * buffer))
+        ii = np.round(np.linspace(st, fin, n)).astype(int)
+        samples = []
+        for i in ii:
+            # TO DO: incorporate option for gaze-centered
+            img = ses.load('world_camera', size=0.25, frame_idx=(i, i+1))[1][0]
+            samples.append(img)
+        if axs is None:
+            scale = 2
+            fig, axs = plt.subplots(1, n, figsize=(n * scale * ar, scale))
+            do_tight_layout = True
+        else:
+            do_tight_layout = False
+        if with_gaze_box:
+            gaze = utils.match_time_points(dict(timestamp=ses.world_time), self.gaze_best)
+            _, vh, vw, _ = file_io.list_array_shapes(str(ses.paths['world_camera'][1]))
+            rect_width = rect_size[0] / vw
+            rect_height = rect_size[1] / vh            
+        for j, img, ax in zip(ii, samples, axs.flatten()):
+            ax.imshow(img, extent=(0, 1, 1, 0), aspect='auto')
+            ax.axis('off')
+            # Show gaze rect
+            if with_gaze_box:
+                gaze_rect(gaze['norm_pos'][j], rect_width, rect_height, ax=ax, linewidth=2, edgecolor=(1, 0.95, 0))
+        if do_tight_layout:
+            plt.tight_layout()
 
     @property
     def pupil(self):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._pupil is None:
-            self._pupil = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
-                               for lr, fname in self.gaze_dict['pupil'].items())
+            self._pupil = dict((lr, self(np.load(PROC_PATH / self.session / fname%lr))) \
+                               for lr, fname in self.gaze_paths['pupil_file'].items())
             # Enumerate options here for clock
-            if self.clock is not 'native':
+            if self.clock != 'native':
+                this_time = getattr(self, this_time)
                 for e in self._pupil.keys():
-                    self._pupil[e] = match_time_points([dict(timestamp=self.world_time), self._pupil[e]])     
+                    self._pupil[e] = utils.match_time_points(dict(timestamp=this_time), self._pupil[e])
         return self._pupil
     
     @property
@@ -542,13 +768,25 @@ class SessionClip(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._gaze is None:
-            self._gaze = dict((lr, np.load(PROC_PATH / self.session / fname%lr)) \
-                               for lr, fname in self.gaze_dict['gaze'].items())
+            self._gaze = dict((lr, self(dict(np.load(PROC_PATH / self.session / (self.gaze_paths['gaze_file']%lr))))) \
+                               for lr in ['left','right'])
             # Enumerate options here for clock
-            if self.clock is not 'native':
+            if self.clock != 'native':
+                if self.clock == 'world_time':
+                    this_time = self.load('world_time')
+                else:
+                    raise NotImplementedError("can only handle 'native' and 'world_time' for clocks so far")
+                #this_time = getattr(self, this_time)
                 for e in self._gaze.keys():
-                    self._gaze[e] = match_time_points([dict(timestamp=self.world_time), self._gaze[e]])                    
+                    self._gaze[e] = utils.match_time_points(dict(timestamp=this_time), self._gaze[e])
         return self._gaze
+
+    @property
+    def gaze_best(self):
+        if SESSION_ERROR_DICT[self.session]['error_left_epoch0'] < SESSION_ERROR_DICT[self.session]['error_right_epoch0']:
+            return self.gaze['left']
+        else:
+            return self.gaze['right']
 
     def binary(self, timestamps, comparison_type=('>=', '<'), pre=0, post=0):
         """Get binary index for this clip within `timestamps`
@@ -647,8 +885,9 @@ class SessionClip(object):
             time = world_time[self.binary(world_time)]
             return time
         elif data_type == 'gaze':
-            out = load_gaze(self.session, **kwargs)
-            return self(out)
+            ses = Session(self.session)
+            gaze = ses.load_gaze(**kwargs)
+            return self(gaze)
         elif data_type == 'odometry':
             odo = file_io.load_msgpack((BASE_PATH / self.session / 'odometry.pldata'))
             odo = utils.dictlist_to_arraydict(odo)
@@ -658,7 +897,7 @@ class SessionClip(object):
             return self(odo)
         elif data_type in ('eye_left', 'eye_right'):
             lr = '1' if 'left' in data_type else '0'
-            fname = BASE_PATH / self.session / f'eye{lr}_blur.mp4'
+            fname = BASE_PATH / self.session / f'eye{lr}{EYE_PRIVACY_SETTING}.mp4'
             ftime = BASE_PATH / self.session / f'eye{lr}_timestamps_0start.npy'
             data_time = np.load(ftime)
             data = file_io.load_video(fname, frames=self.indices(data_time), **kwargs)
@@ -685,6 +924,7 @@ class SessionClip(object):
         start_times += self.onset
         output = np.array([start_times, start_times+sample_duration]).T
         return [SessionClip(*times, tag=self.tag, session=self.session) for times in output]
+
     def shade_bg(self, ax=None, fcol=(.9, .9, .9), yl=None, vert=False, zorder=-1):
         """Shade in xtick grid (every other tick mark is gray/white)"""
         if ax is None:
@@ -715,7 +955,6 @@ class SessionClip(object):
                             wspace=None,
                             eye_left_color=(1.0, 0.5, 0.0),  # orange
                             eye_right_color=(0.0, 0.5, 1.0),  # cyan
-                            session_info=SESSION_INFO,
                             raise_error=False,
                         ):
         """Make radical gaze animation"""
@@ -724,9 +963,8 @@ class SessionClip(object):
         global eye_right_frame    
         global eye_right_image
         eye_video_size = 400 # x 400, square
-        tmp = utils.arraydict_to_dictlist(session_info)
-        si_dict = dict((x['folder'], x) for x in tmp)
-        si = si_dict[self.session]
+        si = get_session_info(self.session)
+        
         try:
             ses = Session.from_folder(self.session, raise_error=raise_error)
             pl = PROC_PATH / ses.folder / (pupil_str%'left')
@@ -747,7 +985,7 @@ class SessionClip(object):
                 eye_right_time = np.load(ertf)
                 eye_right_vid = ses.get_video_handle('eye_right')
             
-            _, vh, vw, _ = file_io.list_array_shapes(ses.paths['world_camera'][1])
+            _, vh, vw, _ = file_io.list_array_shapes(str(ses.paths['world_camera'][1]))
             n_frames = len(self(dict(timestamp=ses.world_time))['timestamp'])
             #frame = world[0]
             rect_width = rect_size[0] / vw
@@ -829,10 +1067,12 @@ class SessionClip(object):
                                         ax=ax_eye_right)
                 
             ax_eye_left.axis([1, 0, 1, 0]) # [0,1, 0, 1]
+            #ax_eye_left.axis([0, 1, 0, 1]) # [0,1, 0, 1]
             ax_eye_left.set_xticks([])
             ax_eye_left.set_yticks([])
             
-            ax_eye_right.axis([0, 1, 0, 1]) #[1, 0, 1, 0]
+            ax_eye_right.axis([1, 0, 1, 0]) # [0,1, 0, 1]
+            #ax_eye_right.axis([0, 1, 0, 1]) #[1, 0, 1, 0]
             ax_eye_right.set_xticks([])
             ax_eye_right.set_yticks([])
 
@@ -943,8 +1183,11 @@ class SessionClip(object):
 
             anim = animation.FuncAnimation(fig, animate, init_func=init, frames=n_frames, interval=1/fps * 1000, blit=True)
         except:
-            eye_left_vid.VideoObj.release()
-            eye_right_vid.VideoObj.release()
+            try:
+                eye_left_vid.VideoObj.release()
+                eye_right_vid.VideoObj.release()
+            except:
+                pass
             raise
         return anim
 
@@ -956,7 +1199,7 @@ class SessionClip(object):
                )
     
 
-class ClipList(object):
+class SessionClipList(object):
     def __init__(self, onsets_offsets, native_timestamps, session=None, tags=None):
         """List of clips
         
@@ -985,7 +1228,7 @@ class ClipList(object):
         """Return binary version of this list over full duration of 
         `native_timestamps`
         
-        i.e., convert this ClipList to a vector of True values for native 
+        i.e., convert this SessionClipList to a vector of True values for native 
         timestamps *during* clips and False values for native timestamps 
         *outside* of clips.
         """
@@ -1020,7 +1263,7 @@ class ClipList(object):
         """Durations in seconds"""
         onoff_times = self.times(include_duration=True)
         onoffs_filtered = [x for x in onoff_times if (x[2] > min_duration) and (x[2]  < max_duration)]
-        return ClipList(onoffs_filtered, self.native_timestamps, session=self.session, tags=self.tags)
+        return SessionClipList(onoffs_filtered, self.native_timestamps, session=self.session, tags=self.tags)
 
     def dilate(self, pre=0, post=0, merge=False):
         """dilate time for each clip. Times in seconds.
@@ -1028,7 +1271,7 @@ class ClipList(object):
         """
         if merge:
             ii = self.binary(pre=pre, post=post)
-            out = ClipList.from_binary(ii, self.native_timestamps, session=self.session)
+            out = SessionClipList.from_binary(ii, self.native_timestamps, session=self.session)
         else:
             # Don't overwrite self
             mn = self.native_timestamps.min()
@@ -1036,11 +1279,11 @@ class ClipList(object):
             onoff_clips = [(x.dilate(pre=pre, post=post, tlimits=(mn, mx), )) \
                             for x in self]
             onoff_times = [(x.onset, x.offset) for x in onoff_clips]
-            out = ClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
+            out = SessionClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
         return out
 
     def invert(self, **kwargs):
-        out = ClipList.from_binary(~self.binary(**kwargs), self.native_timestamps, session=self.session)
+        out = SessionClipList.from_binary(~self.binary(**kwargs), self.native_timestamps, session=self.session)
         # Kill any 1-frame clips
         out.clip_list = [clip for clip in out if clip.duration > 0]
         return out
@@ -1070,7 +1313,7 @@ class ClipList(object):
         # Require that all clips are from same session. For now, clip lists must tbe same session.
         session = list_of_clips[0].session
         assert all([x.session == session for x in list_of_clips]),\
-              'SessionClip objects in ClipList must be from same session!'
+              'SessionClip objects in SessionClipList must be from same session!'
         onoffs = [(x.onset, x.offset) for x in list_of_clips]
         tags = [x.tag for x in list_of_clips]
         ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
@@ -1090,13 +1333,30 @@ class ClipList(object):
             return []
         onoffs = [(x.onset, x.offset) for x in new_clips]
         tags = [x.tag for x in new_clips]
-        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+        return SessionClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
         #return ClipList.from_binary(bb, self.native_timestamps, self.session)
 
     def __add__(self, cliplist):
         a = self.binary(self.native_timestamps)
         b = cliplist.binary(self.native_timestamps)
-        return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+        return SessionClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+
+    def __and__(self, cliplist):
+        new_clips = []
+        #chk = cliplist.binary(self.native_timestamps)
+        for clip in self:
+            onset_btw = any([(other_clip.onset >= clip.onset) &\
+                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
+            offset_btw = any([(other_clip.offset >= clip.onset) &\
+                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
+            if onset_btw | offset_btw:
+                new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
+        onoffs = [(x.onset, x.offset) for x in new_clips]
+        tags = [x.tag for x in new_clips]
+        return SessionClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+
 
     def __len__(self):
         return(len(self.clip_list))
@@ -1113,6 +1373,161 @@ class ClipList(object):
     #     ob.__init([c.indices(native_timestamps) for c in clip_list], native_timestamps, clip_list[0].session)
     #     return ob
 
+
+class ClipList(object):
+    def __init__(self, clips, name='MyClipList', load_gaze_centered=False):
+        """List of clips from potentially disparate sessions
+        
+        all times passed to this and its methods must be normalized to session start
+        i.e. starting when the first data stream for a session came online.
+        
+        """
+        self.clip_list = clips
+        self.name = name
+        self.load_gaze_centered = load_gaze_centered
+
+    def dilate(self, pre=0, post=0):
+        """Dilate time for each clip. 
+
+        No notion of merging clips - all clips in a ClipList are treated as independent.
+        SessionClipList clips are known to be on the same clock wrt each other, and can
+        be merged.
+        
+        Parameters
+        ----------
+        pre : scalar
+            time to add before clip in seconds.
+        post : scalar
+            time to add before clip in seconds.
+        """
+        # Don't overwrite self
+        mn = self.native_timestamps.min()
+        mx = self.native_timestamps.max()
+        onoff_clips = [(x.dilate(pre=pre, post=post, tlimits=(mn, mx), )) \
+                        for x in self]
+        onoff_times = [(x.onset, x.offset) for x in onoff_clips]
+        out = ClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
+        return out    
+
+    @property
+    def durations(self):
+        return np.asarray([x.duration for x in self])
+
+    @property
+    def sessions(self):
+        return sorted(list(set([x.session for x in self])))
+
+    @property
+    def session_count(self):
+        return unique([x.session for x in self])[1]
+    
+    @property
+    def tasks(self):
+        return sorted(list(set([x.task for x in self])))
+    
+    @property
+    def task_count(self):
+        return unique([x.task for x in self])[1]
+
+    @property
+    def tasks(self):
+        return [x.task for x in self]
+
+    @property
+    def task_count(self):
+        _, task_count = unique(self.tasks)
+        return task_count
+
+    @property
+    def locations(self):
+        return sorted(list(set([x.location for x in self])))
+
+    @property
+    def location_count(self):
+        return unique([x.location for x in self])[1]
+    
+    @property
+    def tags(self):
+        return [x.tag for x in self]
+
+    def times(self, include_duration=False):
+            return np.asarray([clip.times(include_duration) for clip in self])
+
+    def filter_duration(self, min_duration=0, max_duration=np.inf):
+        """Durations in seconds"""
+        output_clips = [x for x in self if (x.duration > min_duration) and (x.duration  < max_duration)]
+        return ClipList(output_clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
+
+        
+    def __sub__(self, cliplist, new_name=None):
+        new_clips = []
+        if new_name is None:
+            new_name=self.name
+        #chk = cliplist.binary(self.native_timestamps)
+        all_sessions = sorted(list(set(self.sessions) | set(cliplist.sessions)))
+        for this_session in all_sessions:
+            clip_setA = [x for x in self if x.session==this_session]
+            clip_setB = [x for x in cliplist if x.session==this_session]
+            for clip in clip_setA:
+                onset_btw = any([(other_clip.onset >= clip.onset) &\
+                                (other_clip.onset <= clip.offset) for other_clip in clip_setB])
+                offset_btw = any([(other_clip.offset >= clip.onset) &\
+                                (other_clip.offset <= clip.offset) for other_clip in clip_setB])
+                if not onset_btw | offset_btw:
+                    new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
+        return ClipList(new_clips, name=new_name, load_gaze_centered=self.load_gaze_centered)
+
+    
+    def save(self, fname=None, path=SAMPLE_PATH):
+        if fname is None:
+            fname = f'{self.name}.npz'
+        fpath = path / fname
+        to_save = [dict((k, getattr(x, k)) for k in ['onset', 'offset', 'session','tag']) for x in self]
+        np.savez(fname, **utils.dictlist_to_arraydict(to_save))
+    
+    
+    @classmethod
+    def load(cls, fpath):
+        if not isinstance(fpath, pathlib.Path):
+            fpath = pathlib.Path(fpath)
+        ob = cls.__new__(cls)
+        cc = utils.arraydict_to_dictlist(dict(np.load(fpath, allow_pickle=True)))
+        ob.__init__([SessionClip(**c) for c in cc], name=fpath.name[:-3])
+        return ob
+
+    def __add__(self, cliplist):
+        pass
+        #a = self.binary(self.native_timestamps)
+        #b = cliplist.binary(self.native_timestamps)
+        #return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+
+    def __and__(self, cliplist):
+        new_clips = []
+        for clip in self:
+            onset_btw = any([(other_clip.onset >= clip.onset) &\
+                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
+            offset_btw = any([(other_clip.offset >= clip.onset) &\
+                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
+            if onset_btw | offset_btw:
+                new_clips.append(clip)
+        if len(new_clips) == 0:
+            return []
+        onoffs = [(x.onset, x.offset) for x in new_clips]
+        tags = [x.tag for x in new_clips]
+        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+
+
+    def __len__(self):
+       return(len(self.clip_list))
+    
+    def __getitem__(self, i):
+        return self.clip_list[i]
+    
+    def __iter__(self):
+        return iter(self.clip_list)
+    
 
 def _clean_str(x): 
     return x.lower().strip().replace('_',' ')    
@@ -1223,3 +1638,5 @@ def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **
     # Add the patch to the Axes
     rh = ax.add_patch(rect)
     return rh
+
+
