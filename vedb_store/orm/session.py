@@ -34,7 +34,6 @@ Examples
 >>> tt, frames = s.load('world_camera', time_idx=(0, 5))
 """
 
-from .mappedclass import MappedClass
 from .. import utils
 from .. import options
 import file_io
