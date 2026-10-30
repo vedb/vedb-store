@@ -252,9 +252,9 @@ def make_file_strings(
                                        validation_marker_tag, validation_split_tag, validation_cluster_tag, \
                                        ] if x is not None]
     error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
-    
     out = dict(
         pupil_file = f'pupil_detection-{eye}-{pupil_tag}.npz',
+        calibration_file = f'calibration-{eye}-{calibration_tag}-{calibration_input_hash}.npz',
         gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz',
         error_file = f'error-{eye}-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
         )
