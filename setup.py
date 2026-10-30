@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 requirements = [
-    'numpy', 'scipy', 'couchdb', ] # file_io, docdb_lite
+    'numpy', 'scipy', ] # file_io
 
 setup(
     name='vedb_store',

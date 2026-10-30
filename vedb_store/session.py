@@ -1,5 +1,5 @@
-"""vedb_store.orm.session
-=========================
+"""vedb_store.session
+===================
 
 Utilities for representing and working with VEDB recording sessions.
 
@@ -29,15 +29,14 @@ slices of data.
 
 Examples
 --------
->>> from vedb_store.orm.session import Session
+>>> from vedb_store import Session
 >>> s = Session.from_folder('/path/to/session')
 >>> tt, frames = s.load('world_camera', time_idx=(0, 5))
 """
 
-from .. import utils
-from .. import options
+from . import utils
+from . import options
 import file_io
-from collections import OrderedDict
 import datetime
 import warnings
 import pathlib
@@ -46,7 +45,7 @@ import numpy as np
 import copy
 import os
 
-from ..utils import get_frame_indices, get_time_split, onoff_from_binary
+from .utils import get_frame_indices, get_time_split, onoff_from_binary
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
@@ -57,10 +56,9 @@ SESSION_ERROR_LIST = utils.arraydict_to_dictlist(SESSION_ERROR)
 SESSION_ERROR_DICT = dict((x['folder'], x) for x in SESSION_ERROR_LIST)
 EYE_PRIVACY_SETTING = '' # '_blur'
 
-import file_io
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from matplotlib import animation, patches, colors, gridspec
+from matplotlib import animation, patches
 
 
 def get_session_info(session, session_info=SESSION_INFO):   
