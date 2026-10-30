@@ -9,6 +9,9 @@ __pycache__/
 # Mac baloney
 *.DS_Store
 
+# Claude
+.claude/*
+
 # Distribution / packaging
 .Python
 build/
