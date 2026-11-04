@@ -40,12 +40,14 @@ import file_io
 import datetime
 import warnings
 import pathlib
-import hashlib
 import numpy as np
 import copy
 import os
 
 from .utils import get_frame_indices, get_time_split, onoff_from_binary
+# Gaze-pipeline file names and default processing tags come from vedb_gaze,
+# so loading here always matches what vedb_gaze.pipelines.pipeline_vedb writes
+from vedb_gaze.utils import make_file_strings, defaults as gaze_defaults
 
 BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
 PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
@@ -61,11 +63,28 @@ from matplotlib.gridspec import GridSpec
 from matplotlib import animation, patches
 
 
-def get_session_info(session, session_info=SESSION_INFO):   
+def get_session_info(session, session_info=SESSION_INFO):
     tmp = utils.arraydict_to_dictlist(session_info)
     si_dict = dict((x['folder'], x) for x in tmp)
     si = si_dict[session]
     return si
+
+
+def _session_file_kwargs(session):
+    """Session-specific kwargs for `make_file_strings`, from SESSION_INFO
+
+    Returns `fov_str` (e.g. 'fov101'), which replaces the fov token in the
+    error tag, and `validation_checkerboard_size` ('4x7' or '7x9').
+    """
+    si = get_session_info(session)
+    if si['val_4x7']:
+        validation_checkerboard_size = '4x7'
+    elif si['val_7x9']:
+        validation_checkerboard_size = '7x9'
+    else:
+        raise ValueError('Could not figure out what size validation checkerboard was for this session!')
+    return dict(fov_str=f'fov{si["fov"]:.0f}',
+                validation_checkerboard_size=validation_checkerboard_size)
 
 def show_ellipse(ellipse, img=None, ax=None, center_color='r', **kwargs):
     """Show an OpenCV-style ellipse on a Matplotlib axis, optionally with an image underlay.
@@ -151,120 +170,37 @@ OPTIONAL_FILES = [
     'lens.json'
     ]
 
-# Pipeline defaults
-pipeline_default = dict(
-                  pupil_tag='pylids_pytorch_pupils_v1',
-                  pupil_detrend_tag=None,
-                  calibration_marker_tag='circles_halfres',
-                  calibration_split_tag=None,
-                  calibration_cluster_tag='cluster_circles',
-                  validation_marker_tag='checkerboard_halfres_4x7squares',
-                  validation_split_tag=None, 
-                  validation_cluster_tag='cluster_checkerboards',
-                  calibration_tag='monocular_tps_cv_cluster_median_conf40_cut3std',
-                  gaze_tag='default_mapper',
-                  error_tag='smooth_tps_cv_clust_med_outlier4std_conf40', 
-                  calibration_epoch=0,
-)
+# Default processing tags for the gaze pipeline: the [defaults] section of
+# the vedb_gaze config (keys 'pupil', 'eyelid', ..., 'calibration_epoch')
+pipeline_default = gaze_defaults
 
 
-def make_file_strings(
-        pupil_tag='pylids_pytorch_pupils_v1',
-        eyelid_tag=None,
-        pupil_detrend_tag=None,
-        calibration_marker_tag='circles_halfres',
-        calibration_split_tag=None,
-        calibration_cluster_tag='cluster_circles',
-        validation_marker_tag='checkerboard_halfres_4x7squares',
-        validation_split_tag=None, 
-        validation_cluster_tag='cluster_checkerboards',
-        calibration_tag='monocular_tps_cv_cluster_median_conf40_cut3std',
-        gaze_tag='default_mapper',
-        error_tag='smooth_tps_cv_clust_med_outlier4std_conf40', 
-        calibration_epoch=0,
-        # Extra
-        eye=None,
-        fov_str=None,
-        validation_checkerboard_size = '4x7',
-        validation_epoch=0):
-    """
-    Construct filename templates for gaze-pipeline outputs.
+def _get_pipeline(pipeline=None):
+    """Full set of `make_file_strings` processing tags for `pipeline`
 
     Parameters
     ----------
-    pupil_tag : str
-        Tag for the pupil detection algorithm (used in pupil filename).
-    eyelid_tag : str or None
-        Reserved for eyelid-related tagging (not currently used).
-    pupil_detrend_tag : str or None
-        Detrending tag for pupil processing.
-    calibration_marker_tag : str or None
-        Marker tag used for calibration.
-    calibration_split_tag : str or None
-        Split tag for calibration.
-    calibration_cluster_tag : str or None
-        Clustering tag for calibration markers.
-    validation_marker_tag, validation_split_tag, validation_cluster_tag : str or None
-        Tags used for validation marker detection and processing.
-    calibration_tag : str
-        Calibration algorithm tag used in gaze filename.
-    gaze_tag : str
-        Gaze mapping algorithm tag.
-    error_tag : str
-        Error-processing tag used in error filename.
-    calibration_epoch : int
-        Epoch index used in calibration filename hashing.
-    eye : str or None
-        Placeholder or format for eye side in filenames; defaults to '%s'.
-    fov_str : str or None
-        Field-of-view string inserted into error filename; defaults to '%s'.
-    validation_epoch : int
-        Epoch index used in validation/error filename.
-
-    Returns
-    -------
-    out : dict
-        Dictionary of filename templates with keys 'pupil_file', 'gaze_file', and
-        'error_file'. The templates include format placeholders for eye and fov
-        where appropriate.
+    pipeline : dict or None
+        processing tags, keyed as in `vedb_gaze.utils.make_file_strings`
+        (e.g. 'pupil', 'calibration', 'error'). Tags not given are taken
+        from `pipeline_default`. Old-style keys with a '_tag' suffix (e.g.
+        'pupil_tag') are accepted, with a DeprecationWarning.
     """
-        # Hashes of inputs for steps with too many inputs for a_b_c type filename construction
-    if fov_str is None:
-        fov_str = '%s'
-    if eye is None:
-        eye = '%s'
-    if validation_checkerboard_size != '4x7':
-        validation_marker_tag = validation_marker_tag.replace('4x7', validation_checkerboard_size)
-    #print(validation_marker_tag)
-        
-    calibration_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
-                                       calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, pupil_detrend_tag] if x is not None]
-    # '-' will mess up later parsing of file names, so replace; this *might* make hashes non-unique, but is most likely to be fine.
-    calibration_input_hash = hashlib.blake2b(('-'.join(calibration_args)).replace('-','0').encode(), digest_size=10).hexdigest()
-    error_args = [x for x in [calibration_marker_tag, calibration_split_tag, \
-                                       calibration_cluster_tag, f'epoch{calibration_epoch:02d}', \
-                                       pupil_tag, eyelid_tag, pupil_detrend_tag, \
-                                       calibration_tag, gaze_tag,
-                                       validation_marker_tag, validation_split_tag, validation_cluster_tag, \
-                                       ] if x is not None]
-    error_input_hash = hashlib.blake2b(('-'.join(error_args)).replace('-','0').encode(), digest_size=10).hexdigest()
-    out = dict(
-        pupil_file = f'pupil_detection-{eye}-{pupil_tag}.npz',
-        calibration_file = f'calibration-{eye}-{calibration_tag}-{calibration_input_hash}.npz',
-        gaze_file = f'gaze-{eye}-{gaze_tag}-{calibration_tag}-{calibration_input_hash}.npz',
-        error_file = f'error-{eye}-{error_tag}_{fov_str}-{error_input_hash}-epoch{validation_epoch:02d}.npz',
-        )
+    out = dict(pipeline_default)
+    if pipeline is None:
+        return out
+    old_keys = [k for k in pipeline if k.endswith('_tag')]
+    if len(old_keys) > 0:
+        warnings.warn(f"Pipeline keys ending in '_tag' are deprecated ({old_keys}); "
+                      "use vedb_gaze names, e.g. 'pupil' instead of 'pupil_tag'",
+                      DeprecationWarning, stacklevel=3)
+    for k, v in pipeline.items():
+        k = k[:-len('_tag')] if k.endswith('_tag') else k
+        if k not in out:
+            raise ValueError(f"Unknown pipeline key '{k}'; valid keys: {list(out.keys())}")
+        out[k] = v
     return out
 
-
-# # Slippage correction
-# pupil_detrend_path = f'pupil_detrended-%s-{pipeline['detrending']}.npz'
-# calibration_marker_path = f'markers-calibration-{calibration_marker_string}-epochall.npz' # epoch all - revisit?
-# validation_marker_path = f'markers-validation-{validation_marker_string}-epoch%02d.npz'
-# calibration_path = f'calibration_%s_{hash()}.npz'
-# error_str = 'error_%s.npz'
-# gaze_str = 'gaze_%s.npz'
 
 class Session(object):
     """Representation of a VEDB recording session.
@@ -343,32 +279,30 @@ class Session(object):
         
 
     def load_gaze_pipeline(self, pipeline=None, clock='native', validation_epoch=0, eye=None):
-        """load all elements of a gaze pipeline
+        """Set file names (`self.gaze_paths`) for a gaze pipeline
+
+        File names are built by `vedb_gaze.utils.make_file_strings`, so they
+        match the outputs of `vedb_gaze.pipelines.pipeline_vedb`.
 
         Parameters
         ----------
         pipeline : dict, optional
             dict of preprocessing step tags (strings), each of which identifies
-            how a step of preprocessing was handled. Default values are used if
-            `None`
-        is_verbose : int or bool
-            False or 0 : print nothing
-            True or 1 : print whether each element was found
-            2+ : print all above and database query results
+            how a step of preprocessing was handled, keyed as in
+            `vedb_gaze.utils.make_file_strings` (e.g. 'pupil', 'calibration',
+            'error'). Tags not given are taken from `pipeline_default` (the
+            vedb_gaze config defaults).
+        clock : str, optional
+            clock for loaded data; 'native' by default
+        validation_epoch : int, optional
+            validation epoch for the error file, by default 0
+        eye : str or None, optional
+            'left' or 'right' to fill in file names; None (default) leaves a
+            '%s' placeholder for the eye
         """
-        self.clock = clock 
-        if pipeline is None:
-            pipeline = pipeline_default
-        # Get field of view and validation checkerboard size from SESSION_INFO file
-        si = get_session_info(self.folder)
-        if si['val_4x7']:
-            validation_checkerboard_size = '4x7'
-        elif si['val_7x9']:
-            validation_checkerboard_size = '7x9'
-        else:
-            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
-        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=eye, validation_epoch=validation_epoch,
-                                            validation_checkerboard_size=validation_checkerboard_size)
+        self.clock = clock
+        self.gaze_paths = make_file_strings(**_get_pipeline(pipeline), **_session_file_kwargs(self.folder),
+                                            eye=eye, validation_epoch=validation_epoch)
 
 
     def load_gaze(self, pipeline=None, eye='both', clock='native'):
@@ -379,30 +313,19 @@ class Session(object):
         Parameters
         ----------
         pipeline : dict, optional
-            dict of preprocessing step tags (strings), each of which identifies
-            how a step of preprocessing was handled. Default values are used if
-            `None`
+            dict of preprocessing step tags (strings), keyed as in
+            `vedb_gaze.utils.make_file_strings`; tags not given are taken
+            from `pipeline_default` (see `Session.load_gaze_pipeline`)
         clock : str, optional
-            which timestamps gaze should have. Default is 'native', which means at ~120 hz 
+            which timestamps gaze should have. Default is 'native', which means at ~120 hz
             (native eye camera temporal resolution). 'world_time' specifies that gaze should be
             matched to nearest world timestamp (or averaged over a window according to
             `kwargs` that are passed on to `match_timepoints()`)
         """
-        # Get field of view and validation checkerboard size from SESSION_INFO file
-        si = get_session_info(self.folder)
-        if si['val_4x7']:
-            validation_checkerboard_size = '4x7'
-        elif si['val_7x9']:
-            validation_checkerboard_size = '7x9'
-        else:
-            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
-        if pipeline is None:
-            pipeline = pipeline_default
-        gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=None,
-                                            validation_checkerboard_size=validation_checkerboard_size)
-                
-        gaze = dict(left=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze_file']%'left'))),
-                    right=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze_file']%'right'))))
+        gaze_paths = make_file_strings(**_get_pipeline(pipeline), **_session_file_kwargs(self.folder), eye=None)
+
+        gaze = dict(left=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze']%'left'))),
+                    right=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze']%'right'))))
         # resample to `clock`
         if clock != 'native':
             this_time = getattr(self, clock)
@@ -428,17 +351,20 @@ class Session(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._gaze is None:
-            self._gaze = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['gaze_file']%lr)))) \
+            self._gaze = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['gaze']%lr)))) \
                                for lr in ['left','right'])
         return self._gaze
-    
+
     @property
     def error(self):
-        """Only for epoch 1 if it exists, else nan"""
+        """Gaze error for both eyes, for the validation epoch set in
+        `load_gaze_pipeline()` (epoch 0 by default)"""
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._error is None:
-            self._error = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['error_file']%lr)))) \
+            # make_file_strings returns a list of error files, one per
+            # validation epoch; load_gaze_pipeline asks for a single epoch
+            self._error = dict((lr, dict(np.load(PROC_PATH / self.folder / (self.gaze_paths['error'][0]%lr)))) \
                                for lr in ['left','right'])
         return self._error
     
@@ -688,24 +614,16 @@ class SessionClip(object):
     
     def load_gaze_pipeline(self, pipeline=None, clock='native', eye=None, validation_epoch=0):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
-        
+
+        Sets `self.gaze_paths`; see `Session.load_gaze_pipeline` for arguments.
+        `pipeline` keys follow `vedb_gaze.utils.make_file_strings`, and tags
+        not given are taken from `pipeline_default`.
         """
-        self.clock = clock 
+        self.clock = clock
         if self.session is None:
             return None
-        if pipeline is None:
-            pipeline=pipeline_default
-        # Get field of view and validation checkerboard size from SESSION_INFO file
-        si = get_session_info(self.session)
-        if si['val_4x7']:
-            validation_checkerboard_size = '4x7'
-        elif si['val_7x9']:
-            validation_checkerboard_size = '7x9'
-        else:
-            raise ValueError('Could not figure out what size validation checkerboard was for this session!')
-
-        self.gaze_paths = make_file_strings(**pipeline, fov_str=f'fov{si["fov"]:.0f}', eye=eye, validation_epoch=validation_epoch,
-                                            validation_checkerboard_size=validation_checkerboard_size)
+        self.gaze_paths = make_file_strings(**_get_pipeline(pipeline), **_session_file_kwargs(self.session),
+                                            eye=eye, validation_epoch=validation_epoch)
 
         #self._error = dict((lr, np.load(self.gaze_paths['gaze']%lr)) for lr in eye)
 
@@ -751,11 +669,15 @@ class SessionClip(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._pupil is None:
-            self._pupil = dict((lr, self(np.load(PROC_PATH / self.session / fname%lr))) \
-                               for lr, fname in self.gaze_paths['pupil_file'].items())
+            self._pupil = dict((lr, self(dict(np.load(PROC_PATH / self.session / (self.gaze_paths['pupil']%lr),
+                                                      allow_pickle=True)))) \
+                               for lr in ['left','right'])
             # Enumerate options here for clock
             if self.clock != 'native':
-                this_time = getattr(self, this_time)
+                if self.clock == 'world_time':
+                    this_time = self.load('world_time')
+                else:
+                    raise NotImplementedError("can only handle 'native' and 'world_time' for clocks so far")
                 for e in self._pupil.keys():
                     self._pupil[e] = utils.match_time_points(dict(timestamp=this_time), self._pupil[e])
         return self._pupil
@@ -765,7 +687,7 @@ class SessionClip(object):
         if self.gaze_paths is None:
             self.load_gaze_pipeline()
         if self._gaze is None:
-            self._gaze = dict((lr, self(dict(np.load(PROC_PATH / self.session / (self.gaze_paths['gaze_file']%lr))))) \
+            self._gaze = dict((lr, self(dict(np.load(PROC_PATH / self.session / (self.gaze_paths['gaze']%lr))))) \
                                for lr in ['left','right'])
             # Enumerate options here for clock
             if self.clock != 'native':
