@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 requirements = [
-    'numpy', 'scipy', ] # file_io
+    'numpy', 'scipy', ] # also needs (git installs): file_io, vedb_gaze
 
 setup(
     name='vedb_store',
