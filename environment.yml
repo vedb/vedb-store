@@ -1,28 +1,39 @@
+# Conda environment for vedb-store (and vedb-gaze, which it builds on)
+#   conda env create -f environment.yml
+#   conda activate vedb_analysis
 name: vedb_analysis
 channels:
-  - anaconda
   - conda-forge
-  - auto 
-  - vedb
 dependencies:
   - python=3.10
   - numpy
   - scipy
+  - scikit-learn
+  - pandas
   - matplotlib
-  - jupyter
-  - ipython
+  - seaborn
+  - pyyaml
+  - tqdm
+  - appdirs
+  - msgpack-python
+  - opencv
+  # imported by file_io but not installed by its setup.py
+  - six
+  - h5py
   - pillow
   - imageio
-  - h5py
-  - pyyaml
-  - seaborn
-  - pandas
-  - appdirs
-  - python-couchdb
-  - opencv=4.2.0
-  - msgpack-python
+  - ipython
+  - jupyter
   - pip
   - pip:
-    - git+https://github.com/piecesofmindlab/file_io@main
-    - git+https://github.com/vedb/vedb-gaze@main
-    - git+https://github.com/vedb/vedb-store@main
+    # Pieces of Mind lab utilities (required)
+    - git+https://github.com/piecesofmindlab/file_io.git
+    - git+https://github.com/piecesofmindlab/plot_utils.git
+    # Thin-plate splines, used by vedb-gaze's default calibration and
+    # error steps (installs PyTorch as a dependency)
+    - git+https://github.com/cheind/py-thin-plate-spline.git
+    # vedb-gaze (gaze pipeline; vedb-store builds on it), then vedb-store.
+    # For development, replace these with editable installs of your
+    # checkouts (`pip install -e /path/to/vedb-gaze`, then `-e .`).
+    - git+https://github.com/vedb/vedb-gaze.git
+    - git+https://github.com/vedb/vedb-store.git
