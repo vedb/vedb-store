@@ -48,22 +48,73 @@ from .utils import get_frame_indices, get_time_split, onoff_from_binary
 # Gaze-pipeline file names and default processing tags come from vedb_gaze,
 # so loading here always matches what vedb_gaze.pipelines.pipeline_vedb writes
 from vedb_gaze.utils import make_file_strings, defaults as gaze_defaults
+from vedb_gaze.options import config as gaze_config
+from vedb_gaze.odometry import load_odometry
 
-BASE_PATH = pathlib.Path(options.config.get('paths', 'vedb_directory')).expanduser()
-PROC_PATH = pathlib.Path(options.config.get('paths', 'proc_directory')).expanduser()
-SAMPLE_PATH = pathlib.Path(options.config.get('paths', 'sample_directory')).expanduser()
-SESSION_INFO = dict(np.load(BASE_PATH / 'session_info.npz'))
-SESSION_ERROR = dict(np.load(BASE_PATH / 'session_error.npz'))
-SESSION_ERROR_LIST = utils.arraydict_to_dictlist(SESSION_ERROR)
-SESSION_ERROR_DICT = dict((x['folder'], x) for x in SESSION_ERROR_LIST)
+
+def _config_path(key, gaze_key=None):
+    """Path from the vedb_store config `[paths]` section
+
+    If the vedb_store value is empty (the default), fall back to `gaze_key`
+    in the vedb_gaze config, so both packages use the same data folders.
+    """
+    value = options.config.get('paths', key, fallback='').strip()
+    if (value == '') and (gaze_key is not None):
+        value = gaze_config.get('paths', gaze_key, fallback='').strip()
+    return pathlib.Path(value).expanduser()
+
+
+BASE_PATH = _config_path('vedb_directory', 'base_dir')
+PROC_PATH = _config_path('proc_directory', 'proc_dir')
+SAMPLE_PATH = _config_path('sample_directory')
 EYE_PRIVACY_SETTING = '' # '_blur'
+
+# Tables of per-session metadata (in BASE_PATH), loaded on first use so that
+# importing vedb_store does not require access to the data
+_session_tables = {}
+
+
+def _load_session_table(name):
+    """Load (and cache) `BASE_PATH / <name>.npz` as a dict of arrays"""
+    if name not in _session_tables:
+        fpath = BASE_PATH / f'{name}.npz'
+        if not fpath.exists():
+            raise FileNotFoundError(f"{fpath} not found. Set `vedb_directory` in {options.usercfg} "
+                                    "(or `base_dir` in the vedb_gaze config) to the folder with VEDB sessions.")
+        _session_tables[name] = dict(np.load(fpath))
+    return _session_tables[name]
+
+
+def __getattr__(name):
+    # Backward compatibility: SESSION_INFO / SESSION_ERROR* used to be loaded
+    # at import; now they are loaded when first accessed
+    if name == 'SESSION_INFO':
+        return _load_session_table('session_info')
+    if name == 'SESSION_ERROR':
+        return _load_session_table('session_error')
+    if name == 'SESSION_ERROR_LIST':
+        return utils.arraydict_to_dictlist(_load_session_table('session_error'))
+    if name == 'SESSION_ERROR_DICT':
+        return dict((x['folder'], x) for x in utils.arraydict_to_dictlist(_load_session_table('session_error')))
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib import animation, patches
 
 
-def get_session_info(session, session_info=SESSION_INFO):
+def _clip_arraydict(arraydict, index):
+    """Apply `index` (slice or boolean array) along time to every field of
+    `arraydict` that has one value per timestamp; other fields are dropped"""
+    n = len(arraydict['timestamp'])
+    return dict((k, v[index]) for k, v in arraydict.items()
+                if isinstance(v, np.ndarray) and (np.ndim(v) > 0) and (len(v) == n))
+
+
+def get_session_info(session, session_info=None):
+    """Metadata (e.g. 'fov', 'val_4x7', 'val_7x9') for one session from session_info.npz"""
+    if session_info is None:
+        session_info = _load_session_table('session_info')
     tmp = utils.arraydict_to_dictlist(session_info)
     si_dict = dict((x['folder'], x) for x in tmp)
     si = si_dict[session]
@@ -71,7 +122,7 @@ def get_session_info(session, session_info=SESSION_INFO):
 
 
 def _session_file_kwargs(session):
-    """Session-specific kwargs for `make_file_strings`, from SESSION_INFO
+    """Session-specific kwargs for `make_file_strings`, from session_info.npz
 
     Returns `fov_str` (e.g. 'fov101'), which replaces the fov token in the
     error tag, and `validation_checkerboard_size` ('4x7' or '7x9').
@@ -246,13 +297,14 @@ class Session(object):
 
     def load_clips(self, clip_labels='native'):
         clip_file = pathlib.Path(self.path) / f'{self.folder}.csv'
+        self.clips = []
         if clip_file.exists():
             try:
                 self.clips = parse_csv(clip_file)
-            except:
-                print("Can't parse clips!")
+            except Exception as e:
+                warnings.warn(f"Can't parse clips in {clip_file}: {e}")
         else:
-            print("No clips defined!")
+            warnings.warn(f"No clips defined for {self.folder} (no file {clip_file.name})")
         if clip_labels == 'native':
             clip_labels = ('native', 'native')
         loc_mapping, task_mapping = clip_labels
@@ -262,7 +314,7 @@ class Session(object):
         else:
             loc_mapping = utils.read_yaml(BASE_PATH / f'{loc_mapping}.yaml')
         # Task mapping
-        if loc_mapping == 'native':
+        if task_mapping == 'native':
             pass
         else:
             task_mapping = utils.read_yaml(BASE_PATH / f'{task_mapping}.yaml')
@@ -328,9 +380,12 @@ class Session(object):
                     right=dict(np.load(PROC_PATH / self.folder / (gaze_paths['gaze']%'right'))))
         # resample to `clock`
         if clock != 'native':
-            this_time = getattr(self, clock)
+            if clock == 'world_time':
+                this_time = self.world_time
+            else:
+                raise NotImplementedError("can only handle 'native' and 'world_time' for clocks so far")
             for e in gaze.keys():
-                gaze[e] = utils.match_time_points([dict(timestamp=this_time), gaze[e]])
+                gaze[e] = utils.match_time_points(dict(timestamp=this_time), gaze[e])
 
         if eye == 'left':
             return gaze['left']
@@ -368,24 +423,37 @@ class Session(object):
                                for lr in ['left','right'])
         return self._error
     
-    def load(self, data_type, time_idx=None, frame_idx=None, **kwargs):
+    def load(self, data_type, time_idx=None, frame_idx=None, processed=True, **kwargs):
         """
         Parameters
         ----------
         data_type : string
-            one of: 'world_camera', 'tracking_camera', 'eye_camera', 
+            one of: 'world_camera', 'eye_left', 'eye_right', 'odometry'.
             some data types have multiple sub-components; these can be accessed
-            with colon syntax, e.g. data_type='odometry:location'
+            with colon syntax, e.g. data_type='odometry:pitch'
         time_idx : tuple
             (start time, end time) in seconds since the start of the session.
             Note that some streams (e.g. world_camera) may not start right at
             0 seconds, because they take some time to get started
         frame_idx : tuple
-            (start_frame, end_frame)
+            (start_frame, end_frame). For processed odometry, these index
+            the resampled samples.
+        processed : bool, optional
+            odometry only. If True (default), load with
+            `vedb_gaze.odometry.load_odometry` (resampled, smoothed, with
+            'pitch', 'roll', 'yaw' in degrees); the data are a dict of
+            arrays (or one array, for 'odometry:<field>'). If False, load
+            the raw records from odometry.pldata (a list of dicts, or an
+            array for 'odometry:<field>').
         kwargs : dict
-            passed to relevant loading function. 
+            passed to relevant loading function (for processed odometry,
+            to `load_odometry`, e.g. `resample`, `fps`, `smooth_kwargs`).
             Note that for movie data, you can reshape and change the color format
             by using e.g. `size=(90, 120)` or `color='gray'` (see file_io.load_mp4)
+
+        Returns
+        -------
+        timestamps, data
         """
         # Input check
         if 'idx' in kwargs:
@@ -398,6 +466,18 @@ class Session(object):
             data_type, sub_type = data_type.split(':')
         else:
             sub_type = None
+        if (data_type == 'odometry') and processed:
+            odo = load_odometry(self.path, **kwargs)
+            if time_idx is not None:
+                st_i, fin_i = get_frame_indices(*time_idx, odo['timestamp'])
+            elif frame_idx is not None:
+                st_i, fin_i = frame_idx
+            else:
+                raise ValueError('Please specify either `time_idx` or `frame_idx`')
+            odo = _clip_arraydict(odo, slice(st_i, fin_i))
+            if sub_type is not None:
+                return odo['timestamp'], odo[sub_type]
+            return odo['timestamp'], odo
         tf, df = self.paths[data_type]
         tt = np.load(tf)
         if time_idx is not None:
@@ -701,8 +781,23 @@ class SessionClip(object):
         return self._gaze
 
     @property
+    def error(self):
+        """Gaze error for both eyes (whole session, not clipped), for the
+        validation epoch set in `load_gaze_pipeline()` (epoch 0 by default)"""
+        if self.gaze_paths is None:
+            self.load_gaze_pipeline()
+        if self._error is None:
+            # make_file_strings returns a list of error files, one per
+            # validation epoch; load_gaze_pipeline asks for a single epoch
+            self._error = dict((lr, dict(np.load(PROC_PATH / self.session / (self.gaze_paths['error'][0]%lr)))) \
+                               for lr in ['left','right'])
+        return self._error
+
+    @property
     def gaze_best(self):
-        if SESSION_ERROR_DICT[self.session]['error_left_epoch0'] < SESSION_ERROR_DICT[self.session]['error_right_epoch0']:
+        """Gaze for the eye with lower weighted gaze error (as in
+        `Session.load_gaze(eye='best')`)"""
+        if self.error['left']['gaze_err_weighted'] < self.error['right']['gaze_err_weighted']:
             return self.gaze['left']
         else:
             return self.gaze['right']
@@ -788,7 +883,23 @@ class SessionClip(object):
         else:
             return output
         
-    def load(self, data_type, **kwargs):
+    def load(self, data_type, processed=True, **kwargs):
+        """Load data for this clip
+
+        Parameters
+        ----------
+        data_type : str
+            'world_camera', 'world_time', 'gaze', 'odometry', 'eye_left' or
+            'eye_right'
+        processed : bool, optional
+            odometry only: if True (default), use
+            `vedb_gaze.odometry.load_odometry` (resampled, smoothed, with
+            'pitch', 'roll', 'yaw'); if False, the raw odometry.pldata
+            records, as a dict of arrays
+        **kwargs
+            passed to the loading function (for processed odometry, to
+            `load_odometry`)
+        """
         if self.session is None:
             raise ValueError('Cannot load data with clip `session` set')
         if data_type == 'world_camera':
@@ -807,6 +918,9 @@ class SessionClip(object):
             ses = Session(self.session)
             gaze = ses.load_gaze(**kwargs)
             return self(gaze)
+        elif (data_type == 'odometry') and processed:
+            odo = load_odometry(BASE_PATH / self.session, **kwargs)
+            return _clip_arraydict(odo, self.binary(odo['timestamp']))
         elif data_type == 'odometry':
             odo = file_io.load_msgpack((BASE_PATH / self.session / 'odometry.pldata'))
             odo = utils.dictlist_to_arraydict(odo)
@@ -866,8 +980,8 @@ class SessionClip(object):
 
     def make_gaze_animation(self,
                             rect_size=(600,600),
-                            pupil_str = 'pupil_detection-%s-pylids_eyelids_pupils_v2.npz',
-                            gaze_str = 'gaze-%s-default_mapper-monocular_tps_cv_cluster_median_conf75_cut3std-c0eb1e655a0f58e7905b.npz',
+                            pupil_str=None,
+                            gaze_str=None,
                             fps=30, 
                             world_size_factor=0.25,
                             hspace=0.1,
@@ -876,7 +990,26 @@ class SessionClip(object):
                             eye_right_color=(0.0, 0.5, 1.0),  # cyan
                             raise_error=False,
                         ):
-        """Make radical gaze animation"""
+        """Make radical gaze animation
+
+        Parameters
+        ----------
+        pupil_str, gaze_str : str or None, optional
+            pupil / gaze file name templates (with '%s' for the eye) in
+            PROC_PATH / <session>. By default None, which uses this clip's
+            pipeline (`self.gaze_paths`, set by `load_gaze_pipeline()`; the
+            vedb_gaze default tags if it has not been called).
+        """
+        if (pupil_str is None) or (gaze_str is None):
+            if self.gaze_paths is None:
+                self.load_gaze_pipeline()
+            if pupil_str is None:
+                pupil_str = self.gaze_paths['pupil']
+            if gaze_str is None:
+                gaze_str = self.gaze_paths['gaze']
+        if ('%s' not in pupil_str) or ('%s' not in gaze_str):
+            raise ValueError("pupil / gaze file names need a '%s' placeholder for the eye; "
+                             "call load_gaze_pipeline() with eye=None")
         global eye_left_frame
         global eye_left_image
         global eye_right_frame    
@@ -1118,6 +1251,16 @@ class SessionClip(object):
                )
     
 
+def _indices_to_times(onoff_indices, native_timestamps):
+    """(onset, offset) sample indices -> times in `native_timestamps`
+
+    `onoff_from_binary` gives offset len(data) (exclusive end) for an event
+    still on at the end of the data; that is mapped to the last timestamp.
+    """
+    last = len(native_timestamps) - 1
+    return [native_timestamps[np.minimum(np.asarray(ii)[:2], last)] for ii in onoff_indices]
+
+
 class SessionClipList(object):
     def __init__(self, onsets_offsets, native_timestamps, session=None, tags=None):
         """List of clips
@@ -1131,6 +1274,9 @@ class SessionClipList(object):
         self.session = session
         if not isinstance(onsets_offsets, np.ndarray):
             onsets_offsets = np.asarray(onsets_offsets)
+        if onsets_offsets.size == 0:
+            # No clips
+            onsets_offsets = onsets_offsets.reshape(0, 2)
         self.native_indices = onsets_offsets[:,:2]
         for j, onoff in enumerate(onsets_offsets):
             if len(onoff) == 2:
@@ -1214,7 +1360,7 @@ class SessionClipList(object):
     @classmethod
     def from_indices(cls, onoff_indices, native_timestamps, session=None, tags=None):
         ob = cls.__new__(cls)
-        onoffs = [native_timestamps[ii] for ii in onoff_indices]
+        onoffs = _indices_to_times(onoff_indices, native_timestamps)
         ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
         return ob
 
@@ -1222,7 +1368,7 @@ class SessionClipList(object):
     def from_binary(cls, binary, native_timestamps, session=None, tags=None):
         ob = cls.__new__(cls)
         onoff_indices = onoff_from_binary(binary, return_duration=False)
-        onoffs = [native_timestamps[ii] for ii in onoff_indices]
+        onoffs = _indices_to_times(onoff_indices, native_timestamps)
         ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
         return ob
     
@@ -1305,7 +1451,7 @@ class ClipList(object):
         self.name = name
         self.load_gaze_centered = load_gaze_centered
 
-    def dilate(self, pre=0, post=0):
+    def dilate(self, pre=0, post=0, tlimits=(0, np.inf)):
         """Dilate time for each clip. 
 
         No notion of merging clips - all clips in a ClipList are treated as independent.
@@ -1317,16 +1463,15 @@ class ClipList(object):
         pre : scalar
             time to add before clip in seconds.
         post : scalar
-            time to add before clip in seconds.
+            time to add after clip in seconds.
+        tlimits : tuple, optional
+            (min, max) times to which dilated onsets / offsets are limited,
+            by default (0, np.inf). A ClipList has no single session
+            timeline, so offsets are not limited to each session's duration.
         """
         # Don't overwrite self
-        mn = self.native_timestamps.min()
-        mx = self.native_timestamps.max()
-        onoff_clips = [(x.dilate(pre=pre, post=post, tlimits=(mn, mx), )) \
-                        for x in self]
-        onoff_times = [(x.onset, x.offset) for x in onoff_clips]
-        out = ClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
-        return out    
+        clips = [x.dilate(pre=pre, post=post, tlimits=tlimits) for x in self]
+        return ClipList(clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
 
     @property
     def durations(self):
@@ -1340,14 +1485,6 @@ class ClipList(object):
     def session_count(self):
         return unique([x.session for x in self])[1]
     
-    @property
-    def tasks(self):
-        return sorted(list(set([x.task for x in self])))
-    
-    @property
-    def task_count(self):
-        return unique([x.task for x in self])[1]
-
     @property
     def tasks(self):
         return [x.task for x in self]
@@ -1400,11 +1537,13 @@ class ClipList(object):
 
     
     def save(self, fname=None, path=SAMPLE_PATH):
+        """Save clips (onset, offset, session, tag) to `path / fname`
+        (by default `<name>.npz` in SAMPLE_PATH)"""
         if fname is None:
             fname = f'{self.name}.npz'
-        fpath = path / fname
+        fpath = pathlib.Path(path) / fname
         to_save = [dict((k, getattr(x, k)) for k in ['onset', 'offset', 'session','tag']) for x in self]
-        np.savez(fname, **utils.dictlist_to_arraydict(to_save))
+        np.savez(fpath, **utils.dictlist_to_arraydict(to_save))
     
     
     @classmethod
@@ -1413,29 +1552,33 @@ class ClipList(object):
             fpath = pathlib.Path(fpath)
         ob = cls.__new__(cls)
         cc = utils.arraydict_to_dictlist(dict(np.load(fpath, allow_pickle=True)))
-        ob.__init__([SessionClip(**c) for c in cc], name=fpath.name[:-3])
+        ob.__init__([SessionClip(**c) for c in cc], name=fpath.stem)
         return ob
 
     def __add__(self, cliplist):
-        pass
-        #a = self.binary(self.native_timestamps)
-        #b = cliplist.binary(self.native_timestamps)
-        #return ClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+        """Concatenate the clips of two ClipLists (no merging of overlapping clips)"""
+        return ClipList(list(self) + list(cliplist), name=self.name, load_gaze_centered=self.load_gaze_centered)
 
     def __and__(self, cliplist):
+        """Clips in this list that overlap (in the same session) with a clip in `cliplist`
+
+        Uses the same overlap test as `__sub__` (a clip in `cliplist` starts
+        or ends within the clip).
+        """
         new_clips = []
-        for clip in self:
-            onset_btw = any([(other_clip.onset >= clip.onset) &\
-                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
-            offset_btw = any([(other_clip.offset >= clip.onset) &\
-                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
-            if onset_btw | offset_btw:
-                new_clips.append(clip)
+        for this_session in self.sessions:
+            clip_setA = [x for x in self if x.session==this_session]
+            clip_setB = [x for x in cliplist if x.session==this_session]
+            for clip in clip_setA:
+                onset_btw = any([(other_clip.onset >= clip.onset) &\
+                                (other_clip.onset <= clip.offset) for other_clip in clip_setB])
+                offset_btw = any([(other_clip.offset >= clip.onset) &\
+                                (other_clip.offset <= clip.offset) for other_clip in clip_setB])
+                if onset_btw | offset_btw:
+                    new_clips.append(clip)
         if len(new_clips) == 0:
             return []
-        onoffs = [(x.onset, x.offset) for x in new_clips]
-        tags = [x.tag for x in new_clips]
-        return ClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+        return ClipList(new_clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
 
 
     def __len__(self):
