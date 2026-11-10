@@ -43,6 +43,7 @@ import pathlib
 import numpy as np
 import copy
 import os
+import functools
 
 from .utils import get_frame_indices, get_time_split, onoff_from_binary
 # Gaze-pipeline file names and default processing tags come from vedb_gaze,
@@ -633,8 +634,20 @@ class Session(object):
         return ob
 
 
+@functools.total_ordering
 class SessionClip(object):
-    """Clip of a session."""
+    """Clip of a session: the time interval [onset, offset) on the session's clock.
+
+    Clips compare by value: two clips are equal if session, onset, offset and
+    tag are equal, and clips sort by (session, onset, offset). They are
+    hashable on the same fields, so they can be used in sets / as dict keys;
+    note that `dilate(overwrite=True)` changes a clip in place (and so its
+    hash), so don't do that to clips stored in a set or dict.
+
+    The tag is by convention 'location:task'; tags of merged clips are
+    combined with '|' (e.g. 'kitchen:cooking|kitchen:cleaning'). See
+    `location` and `task`.
+    """
     def __init__(self, onset, offset, session=None, tag=None):
         """Representation of a time inteval (event, clip) within a session in VEDB
         
@@ -678,19 +691,52 @@ class SessionClip(object):
     def duration(self,):
         return self.offset - self.onset
     
+    def _tag_parts(self):
+        """(location, task) for each '|'-separated part of the tag; a part
+        without ':' is a task with location None"""
+        if self.tag is None:
+            return []
+        parts = []
+        for part in str(self.tag).split('|'):
+            if ':' in part:
+                location, task = part.split(':', 1)
+            else:
+                location, task = None, part
+            parts.append((location, task))
+        return parts
+
     @property
     def task(self,):
-        if self.tag is None:
-            return None
-        if ':' in self.tag:
-            return self.tag.split(':')[1]
+        """Task(s) from the tag ('location:task'); unique tasks of a combined
+        tag are joined with '|'. None if there is no task."""
+        return _join_unique([task for _, task in self._tag_parts()])
     
     @property
     def location(self,):
-        if self.tag is None:
-            return None
-        if ':' in self.tag:
-            return self.tag.split(':')[0]    
+        """Location(s) from the tag ('location:task'); unique locations of a
+        combined tag are joined with '|'. None if there is no location."""
+        return _join_unique([location for location, _ in self._tag_parts()])
+
+    def _value(self):
+        return (self.session, float(self.onset), float(self.offset), self.tag)
+
+    def _sort_key(self):
+        # Clips without a session sort last
+        return (self.session is None, '' if self.session is None else str(self.session),
+                float(self.onset), float(self.offset))
+
+    def __eq__(self, other):
+        if not isinstance(other, SessionClip):
+            return NotImplemented
+        return self._value() == other._value()
+
+    def __lt__(self, other):
+        if not isinstance(other, SessionClip):
+            return NotImplemented
+        return self._sort_key() < other._sort_key()
+
+    def __hash__(self):
+        return hash(self._value())
     
     def load_gaze_pipeline(self, pipeline=None, clock='native', eye=None, validation_epoch=0):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
@@ -862,26 +908,31 @@ class SessionClip(object):
         integer_indices, = np.nonzero(binary_index)
         return (integer_indices[0], integer_indices[-1]+1)
     
-    def __call__(self, inpt, key=None, pre=0, post=0, resample_function=None, **kwargs):
+    def __call__(self, inpt, key=None, pre=0, post=0):
+        """Select the samples of an arraydict that fall within this clip
+
+        Parameters
+        ----------
+        inpt : dict
+            arraydict with a 'timestamp' field (on the session clock)
+        key : str, optional
+            if given, return only this field
+        pre, post : scalar, optional
+            seconds to extend the clip before / after, by default 0
+
+        Returns
+        -------
+        dict or array
+            fields with one value per timestamp, restricted to the clip;
+            other fields (dicts, scalars, metadata) are left out
+        """
         assert isinstance(inpt, dict), "Input must be dictionary!"
         assert 'timestamp' in inpt, "dict input must have 'timestamp' field!"
-        tt = inpt['timestamp']
-        ii = self.binary(tt, pre=pre, post=post)
-        output = {}
-        if key is None:
-            keys = list(inpt.keys())
-        else:
-            keys = [key]
-        for k in keys:
-            if isinstance(inpt[k], dict):
-                # Skip dictionaries for now
-                pass
-            # RESAMPLE if asked
-            output[k] = inpt[k][ii]
+        tt = np.asarray(inpt['timestamp'])
+        output = _clip_arraydict(dict(inpt, timestamp=tt), self.binary(tt, pre=pre, post=post))
         if key is not None:
-            return output[k]
-        else:
-            return output
+            return output[key]
+        return output
         
     def load(self, data_type, processed=True, **kwargs):
         """Load data for this clip
@@ -944,9 +995,16 @@ class SessionClip(object):
            sample_duration=3,
            start_jitter_fraction=0.5, # This seems to create a bias toward the center over iterations, which is... fine?
           frac_to_vary=0.2):
-        """Choose `n_samples` non-overlapping random samples within this 
+        """Choose `n_samples` non-overlapping random samples within this clip
 
+        Raises
+        ------
+        ValueError
+            if the clip is shorter than `n_samples * sample_duration`
         """
+        if self.duration < n_samples * sample_duration:
+            raise ValueError(f'Clip is {self.duration:.2f} s long, too short for {n_samples} '
+                             f'samples of {sample_duration} s')
         wiggle_room = self.duration - (sample_duration * n_samples)
         start_jitter = wiggle_room * np.random.rand() * start_jitter_fraction
         wiggle_room -= start_jitter
@@ -1251,23 +1309,176 @@ class SessionClip(object):
                )
     
 
+def _join_unique(values):
+    """Unique non-empty values (in order) joined with '|'; None if there are none"""
+    out = []
+    for v in values:
+        if (v is None) or (v == ''):
+            continue
+        if v not in out:
+            out.append(v)
+    return '|'.join(out) if len(out) > 0 else None
+
+
+def _combine_tags(clips):
+    """Tag for a clip made from `clips`: their distinct tags (or tag parts of
+    already-combined tags) in time order, joined with '|'; None if none"""
+    parts = []
+    for clip in _sort_by_time(clips):
+        if clip.tag is not None:
+            parts.extend(str(clip.tag).split('|'))
+    return _join_unique(parts)
+
+
+def _sort_by_time(clips):
+    """Clips sorted by (onset, offset, tag), deterministic for equal times"""
+    return sorted(clips, key=lambda c: (float(c.onset), float(c.offset), str(c.tag)))
+
+
+def _first_session(clips):
+    """First session that is not None among `clips` (None if all are None)"""
+    for clip in clips:
+        if clip.session is not None:
+            return clip.session
+    return None
+
+
+def _merge_clips(clips):
+    """Merge clips that overlap or touch (one session) into single clips
+
+    The merged clip spans all the clips it is made from; its tag combines
+    their tags (see `_combine_tags`).
+    """
+    groups = []
+    for clip in _sort_by_time(clips):
+        if (len(groups) > 0) and (clip.onset <= groups[-1][1]):
+            groups[-1][1] = max(groups[-1][1], clip.offset)
+            groups[-1][2].append(clip)
+        else:
+            groups.append([clip.onset, clip.offset, [clip]])
+    return [SessionClip(on, off, session=_first_session(cc), tag=_combine_tags(cc))
+            for on, off, cc in groups]
+
+
+def _intersect_clips(clips_a, clips_b):
+    """Time shared by `clips_a` and `clips_b` (one session), merged
+
+    Each piece of shared time gets the combined tags of the two clips it
+    comes from. Clips that only touch share no time.
+    """
+    pieces = []
+    for a in clips_a:
+        for b in clips_b:
+            on, off = max(a.onset, b.onset), min(a.offset, b.offset)
+            if off > on:
+                pieces.append(SessionClip(on, off, session=_first_session([a, b]),
+                                          tag=_combine_tags([a, b])))
+    return _merge_clips(pieces)
+
+
+def _subtract_clips(clips_a, clips_b):
+    """Time of `clips_a` not covered by `clips_b` (one session)
+
+    Clips of `clips_a` are trimmed or split; the pieces keep the tag of the
+    clip they come from (pieces are not merged with each other).
+    """
+    out = []
+    for a in clips_a:
+        pieces = [(a.onset, a.offset)]
+        for b in clips_b:
+            remaining = []
+            for on, off in pieces:
+                if (b.offset <= on) or (b.onset >= off):
+                    # No shared time
+                    remaining.append((on, off))
+                    continue
+                if b.onset > on:
+                    remaining.append((on, b.onset))
+                if b.offset < off:
+                    remaining.append((b.offset, off))
+            pieces = remaining
+        out.extend(SessionClip(on, off, session=a.session, tag=a.tag) for on, off in pieces if off > on)
+    return _sort_by_time(out)
+
+
+def _common_clips(clips_a, clips_b):
+    """Whole clips of either list that overlap (or touch) a clip of the other
+    list, with overlapping / touching clips merged (one session; symmetric)"""
+    def _touches(clip, others):
+        return any((o.onset <= clip.offset) and (o.offset >= clip.onset) for o in others)
+    keep = [a for a in clips_a if _touches(a, clips_b)] + [b for b in clips_b if _touches(b, clips_a)]
+    return _merge_clips(keep)
+
+
+def _group_by_session(clips):
+    """dict of session -> list of clips"""
+    out = {}
+    for clip in clips:
+        out.setdefault(clip.session, []).append(clip)
+    return out
+
+
+def _timeline_end(timestamps):
+    """Time just after the last sample: last timestamp + median sample interval"""
+    timestamps = np.asarray(timestamps)
+    if len(timestamps) < 2:
+        return timestamps[-1]
+    return timestamps[-1] + np.median(np.diff(timestamps))
+
+
 def _indices_to_times(onoff_indices, native_timestamps):
     """(onset, offset) sample indices -> times in `native_timestamps`
 
-    `onoff_from_binary` gives offset len(data) (exclusive end) for an event
-    still on at the end of the data; that is mapped to the last timestamp.
+    Offsets are exclusive (index of the first sample after the clip). An
+    offset of len(native_timestamps) (a clip still on at the end, as given by
+    `onoff_from_binary`) is mapped to one sample interval past the last
+    timestamp, so that the clip includes the last sample.
     """
-    last = len(native_timestamps) - 1
-    return [native_timestamps[np.minimum(np.asarray(ii)[:2], last)] for ii in onoff_indices]
+    native_timestamps = np.asarray(native_timestamps)
+    n = len(native_timestamps)
+    out = []
+    for ii in onoff_indices:
+        on_i, off_i = int(ii[0]), int(ii[1])
+        on = native_timestamps[on_i]
+        off = native_timestamps[off_i] if off_i < n else _timeline_end(native_timestamps)
+        out.append((on, off))
+    return out
 
 
 class SessionClipList(object):
+    """Clips within ONE session, on that session's timeline
+
+    Logical operators work on time (on the session clock):
+
+    - `A + B`: union; clips that overlap or touch are merged into one.
+    - `A & B`: time shared by A and B (merged); touching clips share no time.
+    - `A - B`: time of A not covered by B; clips of A are trimmed or split.
+    - `A.common_clips(B)`: whole clips of A or B that overlap (or touch) a
+      clip of the other list, merged; same result as `B.common_clips(A)`.
+
+    Tags: trimmed / split clips keep their tag; merged clips and pieces of
+    shared time get the distinct tags combined with '|' (e.g. 'a:b|c:d').
+    Clips made from a binary mask (`from_binary`, `invert`) have tag None.
+    Operators between lists of different sessions raise ValueError (use
+    `ClipList` for clips from several sessions); a list with session None
+    combines with any session. Empty results are empty SessionClipLists.
+    """
     def __init__(self, onsets_offsets, native_timestamps, session=None, tags=None):
         """List of clips
         
         all times passed to this and its methods must be normalized to session start
         i.e. starting when the first data stream for a session came online.
-        
+
+        Parameters
+        ----------
+        onsets_offsets : array-like
+            (n, 2) onset, offset times (a third column, e.g. duration, is ignored)
+        native_timestamps : array
+            timestamps of the session timeline (e.g. world video time)
+        session : str, optional
+            session (folder) name
+        tags : list, optional
+            one tag per clip
         """
         self.clip_list = []
         self.native_timestamps = native_timestamps
@@ -1277,78 +1488,82 @@ class SessionClipList(object):
         if onsets_offsets.size == 0:
             # No clips
             onsets_offsets = onsets_offsets.reshape(0, 2)
-        self.native_indices = onsets_offsets[:,:2]
         for j, onoff in enumerate(onsets_offsets):
-            if len(onoff) == 2:
-                onset, offset = onoff
-            elif len(onoff) == 3:
-                onset, offset, duration = onoff
+            onset, offset = onoff[:2]
             if tags is None:
                 tag = None
             else:
                 tag = tags[j]
             self.clip_list.append(SessionClip(onset, offset, session=session, tag=tag))
-    
-    def binary(self, timestamps=None, comparison_type=('>=', '<'), pre=0, post=0, any_way=False):
+
+    def _new(self, clips, session=None):
+        """SessionClipList with `clips` on the same timeline"""
+        if session is None:
+            session = self.session
+        return SessionClipList([(c.onset, c.offset) for c in clips], self.native_timestamps,
+                               session=session, tags=[c.tag for c in clips])
+
+    def binary(self, timestamps=None, comparison_type=('>=', '<')):
         """Return binary version of this list over full duration of 
-        `native_timestamps`
+        `native_timestamps` (or of `timestamps`, if given)
         
         i.e., convert this SessionClipList to a vector of True values for native 
         timestamps *during* clips and False values for native timestamps 
-        *outside* of clips.
+        *outside* of clips. For extended clips, `dilate()` first.
         """
         if timestamps is None:
             timestamps = self.native_timestamps
-        if any_way:
-            out = np.any(np.vstack([self.binary(timestamps=timestamps,
-                                                comparison_type=comparison_type,
-                                                pre=pre,
-                                                post=post)
-                                    for clip in self]), axis=0)
-        else:
-            out = np.zeros_like(timestamps)
-            for clip in self:
-                st, fin = clip.indices(timestamps, comparison_type=comparison_type)
-                if st is not None:
-                    out[st:fin] = 1
-            out = out > 0
+        timestamps = np.asarray(timestamps)
+        out = np.zeros(timestamps.shape, dtype=bool)
+        for clip in self:
+            out |= clip.binary(timestamps, comparison_type=comparison_type)
         return out
 
     def indices(self, timestamps=None, comparison_type=('>=', '<')):
+        """(n_clips, 2) array of (start, end) indices of each clip in
+        `timestamps` (default `native_timestamps`); end is exclusive. A clip
+        with no samples gives start == end."""
         if timestamps is None:
             timestamps = self.native_timestamps
-        ii = self.binary(timestamps=timestamps, comparison_type=comparison_type)
-        out = onoff_from_binary(ii, return_duration=False)
-        return np.asarray(out)
+        timestamps = np.asarray(timestamps)
+        side_on = 'left' if comparison_type[0] == '>=' else 'right'
+        side_off = 'left' if comparison_type[1] == '<' else 'right'
+        out = [(np.searchsorted(timestamps, clip.onset, side=side_on),
+                np.searchsorted(timestamps, clip.offset, side=side_off)) for clip in self]
+        out = np.array(out, dtype=int).reshape(-1, 2)
+        out[:, 1] = np.maximum(out[:, 0], out[:, 1])
+        return out
+
+    @property
+    def native_indices(self):
+        """(n_clips, 2) array of (start, end) indices of each clip in `native_timestamps`"""
+        return self.indices()
     
     def times(self, include_duration=False):
         return np.asarray([clip.times(include_duration) for clip in self.clip_list])
         
     def filter_duration(self, min_duration=0, max_duration=np.inf):
-        """Durations in seconds"""
-        onoff_times = self.times(include_duration=True)
-        onoffs_filtered = [x for x in onoff_times if (x[2] > min_duration) and (x[2]  < max_duration)]
-        return SessionClipList(onoffs_filtered, self.native_timestamps, session=self.session, tags=self.tags)
+        """Clips with min_duration < duration < max_duration (seconds)"""
+        return self._new([x for x in self if (x.duration > min_duration) and (x.duration < max_duration)])
 
     def dilate(self, pre=0, post=0, merge=False):
         """dilate time for each clip. Times in seconds.
 
+        Clips are limited to the timeline (`native_timestamps`). If `merge`,
+        dilated clips that overlap or touch are merged (tags combined).
         """
+        # Don't overwrite self
+        mn = np.min(self.native_timestamps)
+        mx = _timeline_end(self.native_timestamps)
+        clips = [x.dilate(pre=pre, post=post, tlimits=(mn, mx)) for x in self]
         if merge:
-            ii = self.binary(pre=pre, post=post)
-            out = SessionClipList.from_binary(ii, self.native_timestamps, session=self.session)
-        else:
-            # Don't overwrite self
-            mn = self.native_timestamps.min()
-            mx = self.native_timestamps.max()
-            onoff_clips = [(x.dilate(pre=pre, post=post, tlimits=(mn, mx), )) \
-                            for x in self]
-            onoff_times = [(x.onset, x.offset) for x in onoff_clips]
-            out = SessionClipList(onoff_times, self.native_timestamps, session=self.session, tags=self.tags)
-        return out
+            clips = _merge_clips(clips)
+        return self._new(clips)
 
-    def invert(self, **kwargs):
-        out = SessionClipList.from_binary(~self.binary(**kwargs), self.native_timestamps, session=self.session)
+    def invert(self, comparison_type=('>=', '<')):
+        """Clips for the time between clips (on `native_timestamps`); tags are None"""
+        out = SessionClipList.from_binary(~self.binary(comparison_type=comparison_type),
+                                          self.native_timestamps, session=self.session)
         # Kill any 1-frame clips
         out.clip_list = [clip for clip in out if clip.duration > 0]
         return out
@@ -1366,6 +1581,8 @@ class SessionClipList(object):
 
     @classmethod
     def from_binary(cls, binary, native_timestamps, session=None, tags=None):
+        """Clips for runs of True in `binary` (one value per native timestamp).
+        Tags are None unless `tags` (one per run) is given."""
         ob = cls.__new__(cls)
         onoff_indices = onoff_from_binary(binary, return_duration=False)
         onoffs = _indices_to_times(onoff_indices, native_timestamps)
@@ -1376,52 +1593,48 @@ class SessionClipList(object):
     def from_clips(cls, list_of_clips, native_timestamps):
         ob = cls.__new__(cls)
         # Require that all clips are from same session. For now, clip lists must tbe same session.
-        session = list_of_clips[0].session
-        assert all([x.session == session for x in list_of_clips]),\
+        session = _first_session(list_of_clips)
+        assert all([x.session in (session, None) for x in list_of_clips]),\
               'SessionClip objects in SessionClipList must be from same session!'
         onoffs = [(x.onset, x.offset) for x in list_of_clips]
         tags = [x.tag for x in list_of_clips]
         ob.__init__(onoffs, native_timestamps, session=session, tags=tags)
         return ob
-    
-    def __sub__(self, cliplist):
-        new_clips = []
-        #chk = cliplist.binary(self.native_timestamps)
-        for clip in self:
-            onset_btw = any([(other_clip.onset >= clip.onset) &\
-                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
-            offset_btw = any([(other_clip.offset >= clip.onset) &\
-                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
-            if not onset_btw | offset_btw:
-                new_clips.append(clip)
-        if len(new_clips) == 0:
-            return []
-        onoffs = [(x.onset, x.offset) for x in new_clips]
-        tags = [x.tag for x in new_clips]
-        return SessionClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
-        #return ClipList.from_binary(bb, self.native_timestamps, self.session)
+
+    def to_cliplist(self, name='MyClipList'):
+        """ClipList with the clips of this list"""
+        return ClipList(list(self), name=name)
+
+    def _check_other(self, other):
+        """Session of the result of combining with `other`; ValueError if
+        `other` is from a different session"""
+        if not isinstance(other, SessionClipList):
+            raise TypeError(f'Expected a SessionClipList, got {type(other).__name__}')
+        if (self.session is not None) and (other.session is not None) and (self.session != other.session):
+            raise ValueError(f"Can't combine clips of session {self.session} with clips of "
+                             f"session {other.session}; use ClipList for clips from several sessions")
+        return self.session if self.session is not None else other.session
 
     def __add__(self, cliplist):
-        a = self.binary(self.native_timestamps)
-        b = cliplist.binary(self.native_timestamps)
-        return SessionClipList.from_binary(a | b, self.native_timestamps, session=self.session) #, tags=self.tags)
+        """Time union; overlapping or touching clips are merged (tags combined)"""
+        session = self._check_other(cliplist)
+        return self._new(_merge_clips(list(self) + list(cliplist)), session=session)
 
     def __and__(self, cliplist):
-        new_clips = []
-        #chk = cliplist.binary(self.native_timestamps)
-        for clip in self:
-            onset_btw = any([(other_clip.onset >= clip.onset) &\
-                              (other_clip.onset <= clip.offset) for other_clip in cliplist])
-            offset_btw = any([(other_clip.offset >= clip.onset) &\
-                               (other_clip.offset <= clip.offset) for other_clip in cliplist])
-            if onset_btw | offset_btw:
-                new_clips.append(clip)
-        if len(new_clips) == 0:
-            return []
-        onoffs = [(x.onset, x.offset) for x in new_clips]
-        tags = [x.tag for x in new_clips]
-        return SessionClipList(onoffs, self.native_timestamps, session=self.session, tags=tags)
+        """Time shared with `cliplist` (tags combined)"""
+        session = self._check_other(cliplist)
+        return self._new(_intersect_clips(list(self), list(cliplist)), session=session)
 
+    def __sub__(self, cliplist):
+        """Time of this list not covered by `cliplist` (clips trimmed / split)"""
+        session = self._check_other(cliplist)
+        return self._new(_subtract_clips(list(self), list(cliplist)), session=session)
+
+    def common_clips(self, cliplist):
+        """Whole clips of this list or `cliplist` that overlap (or touch) a
+        clip of the other list, merged; `A.common_clips(B)` == `B.common_clips(A)`"""
+        session = self._check_other(cliplist)
+        return self._new(_common_clips(list(self), list(cliplist)), session=session)
 
     def __len__(self):
         return(len(self.clip_list))
@@ -1431,25 +1644,49 @@ class SessionClipList(object):
     
     def __iter__(self):
         return iter(self.clip_list)
-    # Do we want this...?
-    # @classmethod
-    # def from_clip_list(cls, clip_list, native_timestamps):
-    #     ob = cls.__new__(cls)
-    #     ob.__init([c.indices(native_timestamps) for c in clip_list], native_timestamps, clip_list[0].session)
-    #     return ob
+
+    def __repr__(self):
+        return f'SessionClipList for {self.session}: {len(self)} clips'
+
+
+def _sort_unique(values):
+    """Sorted unique values, None last"""
+    return sorted(set(values), key=lambda v: (v is None, '' if v is None else str(v)))
 
 
 class ClipList(object):
+    """Clips from potentially many sessions (e.g. a sample of VEDB)
+
+    Logical operators and `common_clips` work like those of SessionClipList
+    (on time; see there), separately for each session: clips of different
+    sessions never interact. Sessions in only one list pass through `+`,
+    drop out of `&` and `common_clips`, and are unchanged by `-`. Results
+    are sorted by (session, onset) and keep this list's name.
+    """
     def __init__(self, clips, name='MyClipList', load_gaze_centered=False):
         """List of clips from potentially disparate sessions
         
         all times passed to this and its methods must be normalized to session start
         i.e. starting when the first data stream for a session came online.
-        
+
+        Parameters
+        ----------
+        clips : iterable
+            SessionClips, or SessionClipLists / ClipLists (whose clips are
+            added), or a mix; the list is copied
         """
-        self.clip_list = clips
+        clip_list = []
+        for clip in clips:
+            if isinstance(clip, (SessionClipList, ClipList)):
+                clip_list.extend(list(clip))
+            else:
+                clip_list.append(clip)
+        self.clip_list = clip_list
         self.name = name
         self.load_gaze_centered = load_gaze_centered
+
+    def _new(self, clips):
+        return ClipList(sorted(clips), name=self.name, load_gaze_centered=self.load_gaze_centered)
 
     def dilate(self, pre=0, post=0, tlimits=(0, np.inf)):
         """Dilate time for each clip. 
@@ -1479,31 +1716,52 @@ class ClipList(object):
 
     @property
     def sessions(self):
-        return sorted(list(set([x.session for x in self])))
+        """Sorted unique sessions (None last)"""
+        return _sort_unique(self.clip_sessions)
+
+    @property
+    def clip_sessions(self):
+        """Session of each clip"""
+        return [x.session for x in self]
 
     @property
     def session_count(self):
-        return unique([x.session for x in self])[1]
+        """dict of session -> number of clips"""
+        return unique(self.clip_sessions)[1]
     
     @property
     def tasks(self):
+        """Sorted unique tasks (None last)"""
+        return _sort_unique(self.clip_tasks)
+
+    @property
+    def clip_tasks(self):
+        """Task of each clip"""
         return [x.task for x in self]
 
     @property
     def task_count(self):
-        _, task_count = unique(self.tasks)
-        return task_count
+        """dict of task -> number of clips"""
+        return unique(self.clip_tasks)[1]
 
     @property
     def locations(self):
-        return sorted(list(set([x.location for x in self])))
+        """Sorted unique locations (None last)"""
+        return _sort_unique(self.clip_locations)
+
+    @property
+    def clip_locations(self):
+        """Location of each clip"""
+        return [x.location for x in self]
 
     @property
     def location_count(self):
-        return unique([x.location for x in self])[1]
+        """dict of location -> number of clips"""
+        return unique(self.clip_locations)[1]
     
     @property
     def tags(self):
+        """Tag of each clip"""
         return [x.tag for x in self]
 
     def times(self, include_duration=False):
@@ -1514,27 +1772,72 @@ class ClipList(object):
         output_clips = [x for x in self if (x.duration > min_duration) and (x.duration  < max_duration)]
         return ClipList(output_clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
 
-        
-    def __sub__(self, cliplist, new_name=None):
-        new_clips = []
-        if new_name is None:
-            new_name=self.name
-        #chk = cliplist.binary(self.native_timestamps)
-        all_sessions = sorted(list(set(self.sessions) | set(cliplist.sessions)))
-        for this_session in all_sessions:
-            clip_setA = [x for x in self if x.session==this_session]
-            clip_setB = [x for x in cliplist if x.session==this_session]
-            for clip in clip_setA:
-                onset_btw = any([(other_clip.onset >= clip.onset) &\
-                                (other_clip.onset <= clip.offset) for other_clip in clip_setB])
-                offset_btw = any([(other_clip.offset >= clip.onset) &\
-                                (other_clip.offset <= clip.offset) for other_clip in clip_setB])
-                if not onset_btw | offset_btw:
-                    new_clips.append(clip)
-        if len(new_clips) == 0:
-            return []
-        return ClipList(new_clips, name=new_name, load_gaze_centered=self.load_gaze_centered)
+    def _per_session(self, cliplist, fn, left_only=False, right_only=False):
+        """Apply `fn(clips_a, clips_b)` per session; sessions present only in
+        this list (`left_only`) or only in `cliplist` (`right_only`) are
+        passed through `fn` with an empty list for the other side if True,
+        dropped if False"""
+        a = _group_by_session(self)
+        b = _group_by_session(cliplist)
+        out = []
+        for session in set(a) | set(b):
+            clips_a, clips_b = a.get(session, []), b.get(session, [])
+            if (len(clips_a) > 0) and (len(clips_b) > 0):
+                out.extend(fn(clips_a, clips_b))
+            elif (len(clips_a) > 0) and left_only:
+                out.extend(fn(clips_a, []))
+            elif (len(clips_b) > 0) and right_only:
+                out.extend(fn([], clips_b))
+        return self._new(out)
 
+    def __add__(self, cliplist):
+        """Time union per session; overlapping or touching clips are merged"""
+        return self._per_session(cliplist, lambda a, b: _merge_clips(a + b), left_only=True, right_only=True)
+
+    def __and__(self, cliplist):
+        """Time shared with `cliplist`, per session"""
+        return self._per_session(cliplist, _intersect_clips)
+
+    def __sub__(self, cliplist):
+        """Time not covered by `cliplist`, per session (clips trimmed / split)"""
+        return self._per_session(cliplist, _subtract_clips, left_only=True)
+
+    def common_clips(self, cliplist):
+        """Whole clips of this list or `cliplist` that overlap (or touch) a
+        clip of the other list in the same session, merged; symmetric"""
+        return self._per_session(cliplist, _common_clips)
+
+    def by_session(self, native_timestamps=None):
+        """Split into one SessionClipList per session
+
+        Parameters
+        ----------
+        native_timestamps : dict or array, optional
+            timeline for each session's SessionClipList: a dict of session
+            -> timestamps, or one array (only if there is one session). By
+            default, each session's world video timestamps
+            (BASE_PATH / <session> / world_timestamps_0start.npy).
+
+        Returns
+        -------
+        dict
+            session -> SessionClipList
+        """
+        groups = _group_by_session(self)
+        if (native_timestamps is not None) and (not isinstance(native_timestamps, dict)) and (len(groups) > 1):
+            raise ValueError('Give `native_timestamps` as a dict of session -> timestamps for several sessions')
+        out = {}
+        for session in _sort_unique(groups.keys()):
+            clips = groups[session]
+            if native_timestamps is None:
+                timestamps = np.load(BASE_PATH / str(session) / 'world_timestamps_0start.npy')
+            elif isinstance(native_timestamps, dict):
+                timestamps = native_timestamps[session]
+            else:
+                timestamps = native_timestamps
+            out[session] = SessionClipList([(c.onset, c.offset) for c in clips], timestamps,
+                                           session=session, tags=[c.tag for c in clips])
+        return out
     
     def save(self, fname=None, path=SAMPLE_PATH):
         """Save clips (onset, offset, session, tag) to `path / fname`
@@ -1555,32 +1858,6 @@ class ClipList(object):
         ob.__init__([SessionClip(**c) for c in cc], name=fpath.stem)
         return ob
 
-    def __add__(self, cliplist):
-        """Concatenate the clips of two ClipLists (no merging of overlapping clips)"""
-        return ClipList(list(self) + list(cliplist), name=self.name, load_gaze_centered=self.load_gaze_centered)
-
-    def __and__(self, cliplist):
-        """Clips in this list that overlap (in the same session) with a clip in `cliplist`
-
-        Uses the same overlap test as `__sub__` (a clip in `cliplist` starts
-        or ends within the clip).
-        """
-        new_clips = []
-        for this_session in self.sessions:
-            clip_setA = [x for x in self if x.session==this_session]
-            clip_setB = [x for x in cliplist if x.session==this_session]
-            for clip in clip_setA:
-                onset_btw = any([(other_clip.onset >= clip.onset) &\
-                                (other_clip.onset <= clip.offset) for other_clip in clip_setB])
-                offset_btw = any([(other_clip.offset >= clip.onset) &\
-                                (other_clip.offset <= clip.offset) for other_clip in clip_setB])
-                if onset_btw | offset_btw:
-                    new_clips.append(clip)
-        if len(new_clips) == 0:
-            return []
-        return ClipList(new_clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
-
-
     def __len__(self):
        return(len(self.clip_list))
     
@@ -1589,6 +1866,9 @@ class ClipList(object):
     
     def __iter__(self):
         return iter(self.clip_list)
+
+    def __repr__(self):
+        return f'ClipList {self.name}: {len(self)} clips from {len(self.sessions)} sessions'
     
 
 def _clean_str(x): 
