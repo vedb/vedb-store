@@ -111,8 +111,11 @@ blinks; `W + K` gives `[0, 60)`; `W.clip_and(K)` gives `[0, 60)`; and
   (`from_binary`, `invert`) have no tag. `clip.location` / `clip.task` parse
   each part (`'loc:task'`; a part without `:` is a task) and join unique
   values with `|`.
-- **Sessions:** combining `SessionClipList`s of different sessions raises a
-  `ValueError`. `ClipList` operations are done per session (clips of
+- **Sessions:** combining `SessionClipList`s of different sessions with
+  `+`, `&` or `-` raises a `ValueError`. `clip_and` / `clip_not` also accept
+  a single `SessionClip` (treated as a one-clip list), a `ClipList`, or a
+  list of clips, and check each clip's session: only clips from the same
+  session are combined / excluded, the rest are ignored. `ClipList` operations are done per session (clips of
   different sessions never interact), and results are sorted by session and
   onset. `ClipList.by_session()` splits a ClipList into one SessionClipList
   per session; `SessionClipList.to_cliplist()` goes the other way.
