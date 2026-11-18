@@ -11,8 +11,8 @@ gaze pipeline (pupils, gaze, gaze error) for them.
 | --- | --- |
 | `Session` | one recording session (a folder in the VEDB directory) |
 | `SessionClip` | a time interval within one session, e.g. a labeled task |
-| `SessionClipList` | several clips from the *same* session, on one timeline; supports `+`, `-`, `&`, `common_clips`, `invert`, `dilate` |
-| `ClipList` | clips from *many* sessions, e.g. a sample of VEDB to analyze; supports `+`, `-`, `&`, `common_clips`, `dilate`, `by_session`, `save` / `load` |
+| `SessionClipList` | several clips from the *same* session, on one timeline; supports `+`, `-`, `&`, `clip_and`, `clip_not`, `invert`, `dilate` |
+| `ClipList` | clips from *many* sessions, e.g. a sample of VEDB to analyze; supports `+`, `-`, `&`, `clip_and`, `clip_not`, `dilate`, `by_session`, `save` / `load` |
 
 All times are in seconds, zero-referenced to the start of the session (the
 `*_timestamps_0start.npy` files).
@@ -96,11 +96,14 @@ The operators on `SessionClipList` and `ClipList` work on **time**:
 | `A + B` | time covered by A or B; clips that overlap or touch are merged into one |
 | `A & B` | time covered by both A and B (clips that only touch share no time) |
 | `A - B` | time of A not covered by B; clips of A are trimmed or split |
-| `A.common_clips(B)` | whole clips of A or B that overlap (or touch) a clip of the other list, merged; same as `B.common_clips(A)` |
+| `A.clip_and(B)` | whole clips of A or B that overlap (or touch) a clip of the other list, merged; same as `B.clip_and(A)` |
+| `A.clip_not(B)` | whole clips of A that do not overlap (or touch) any clip of B, unchanged |
 
 For example, with walking `W = [0, 60)` and blinks `K = [10, 10.3), [30, 30.2)`:
 `W - K` gives `[0, 10), [10.3, 30), [30.2, 60)`; `W & K` gives the two
-blinks; `W + K` gives `[0, 60)`; and `W.common_clips(K)` gives `[0, 60)`.
+blinks; `W + K` gives `[0, 60)`; `W.clip_and(K)` gives `[0, 60)`; and
+`W.clip_not(K)` is empty (the walking clip contains blinks), while
+`K.clip_not(W)` is also empty (every blink is within walking).
 
 - **Tags:** trimmed or split clips keep their tag; merged clips and pieces
   of shared time combine the distinct tags with `|` (e.g.

@@ -1401,13 +1401,24 @@ def _subtract_clips(clips_a, clips_b):
     return _sort_by_time(out)
 
 
-def _common_clips(clips_a, clips_b):
+def _overlaps_any(clip, others):
+    """Whether `clip` overlaps or touches any clip in `others` (whole-clip test
+    used by `clip_and` / `clip_not`)"""
+    return any((o.onset <= clip.offset) and (o.offset >= clip.onset) for o in others)
+
+
+def _clip_and(clips_a, clips_b):
     """Whole clips of either list that overlap (or touch) a clip of the other
     list, with overlapping / touching clips merged (one session; symmetric)"""
-    def _touches(clip, others):
-        return any((o.onset <= clip.offset) and (o.offset >= clip.onset) for o in others)
-    keep = [a for a in clips_a if _touches(a, clips_b)] + [b for b in clips_b if _touches(b, clips_a)]
+    keep = [a for a in clips_a if _overlaps_any(a, clips_b)] + [b for b in clips_b if _overlaps_any(b, clips_a)]
     return _merge_clips(keep)
+
+
+def _clip_not(clips_a, clips_b):
+    """Whole clips of `clips_a` that do not overlap (or touch) any clip of
+    `clips_b`, unchanged (one session)"""
+    keep = [a for a in clips_a if not _overlaps_any(a, clips_b)]
+    return _sort_by_time([SessionClip(a.onset, a.offset, session=a.session, tag=a.tag) for a in keep])
 
 
 def _group_by_session(clips):
@@ -1453,8 +1464,14 @@ class SessionClipList(object):
     - `A + B`: union; clips that overlap or touch are merged into one.
     - `A & B`: time shared by A and B (merged); touching clips share no time.
     - `A - B`: time of A not covered by B; clips of A are trimmed or split.
-    - `A.common_clips(B)`: whole clips of A or B that overlap (or touch) a
-      clip of the other list, merged; same result as `B.common_clips(A)`.
+    Whole-clip methods (clips are kept or dropped as a whole, never cut):
+
+    - `A.clip_and(B)`: whole clips of A or B that overlap (or touch) a clip
+      of the other list, merged; same result as `B.clip_and(A)`.
+    - `A.clip_not(B)`: whole clips of A that do not overlap (or touch) any
+      clip of B, unchanged (tags kept). Every clip of A ends up in exactly
+      one of `A.clip_and(B)` (merged with what it overlaps) or
+      `A.clip_not(B)`. Not symmetric.
 
     Tags: trimmed / split clips keep their tag; merged clips and pieces of
     shared time get the distinct tags combined with '|' (e.g. 'a:b|c:d').
@@ -1630,11 +1647,20 @@ class SessionClipList(object):
         session = self._check_other(cliplist)
         return self._new(_subtract_clips(list(self), list(cliplist)), session=session)
 
-    def common_clips(self, cliplist):
+    def clip_and(self, cliplist):
         """Whole clips of this list or `cliplist` that overlap (or touch) a
-        clip of the other list, merged; `A.common_clips(B)` == `B.common_clips(A)`"""
+        clip of the other list, merged (tags combined); `A.clip_and(B)` ==
+        `B.clip_and(A)`"""
         session = self._check_other(cliplist)
-        return self._new(_common_clips(list(self), list(cliplist)), session=session)
+        return self._new(_clip_and(list(self), list(cliplist)), session=session)
+
+    def clip_not(self, cliplist):
+        """Whole clips of this list that do not overlap (or touch) any clip
+        of `cliplist`, unchanged (tags kept). A clip that overlaps a clip of
+        `cliplist` at all is dropped entirely (compare `A - B`, which only
+        removes the overlapping time)."""
+        session = self._check_other(cliplist)
+        return self._new(_clip_not(list(self), list(cliplist)), session=session)
 
     def __len__(self):
         return(len(self.clip_list))
@@ -1657,10 +1683,11 @@ def _sort_unique(values):
 class ClipList(object):
     """Clips from potentially many sessions (e.g. a sample of VEDB)
 
-    Logical operators and `common_clips` work like those of SessionClipList
-    (on time; see there), separately for each session: clips of different
-    sessions never interact. Sessions in only one list pass through `+`,
-    drop out of `&` and `common_clips`, and are unchanged by `-`. Results
+    Logical operators and `clip_and` / `clip_not` work like those of
+    SessionClipList (see there), separately for each session: clips of
+    different sessions never interact. Sessions in only one list pass
+    through `+`, drop out of `&` and `clip_and`, and are unchanged by `-`
+    and `clip_not` (sessions only in the base list). Results
     are sorted by (session, onset) and keep this list's name.
     """
     def __init__(self, clips, name='MyClipList', load_gaze_centered=False):
@@ -1802,10 +1829,16 @@ class ClipList(object):
         """Time not covered by `cliplist`, per session (clips trimmed / split)"""
         return self._per_session(cliplist, _subtract_clips, left_only=True)
 
-    def common_clips(self, cliplist):
+    def clip_and(self, cliplist):
         """Whole clips of this list or `cliplist` that overlap (or touch) a
         clip of the other list in the same session, merged; symmetric"""
-        return self._per_session(cliplist, _common_clips)
+        return self._per_session(cliplist, _clip_and)
+
+    def clip_not(self, cliplist):
+        """Whole clips of this list that do not overlap (or touch) any clip
+        of `cliplist` in the same session, unchanged; sessions only in this
+        list are kept entirely"""
+        return self._per_session(cliplist, _clip_not, left_only=True)
 
     def by_session(self, native_timestamps=None):
         """Split into one SessionClipList per session
