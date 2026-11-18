@@ -11,8 +11,8 @@ gaze pipeline (pupils, gaze, gaze error) for them.
 | --- | --- |
 | `Session` | one recording session (a folder in the VEDB directory) |
 | `SessionClip` | a time interval within one session, e.g. a labeled task |
-| `SessionClipList` | several clips from the *same* session, on one timeline; supports `+`, `-`, `&`, `invert`, `dilate` |
-| `ClipList` | clips from *many* sessions, e.g. a sample of VEDB to analyze; supports `+`, `-`, `&`, `dilate`, `save` / `load` |
+| `SessionClipList` | several clips from the *same* session, on one timeline; supports `+`, `-`, `&`, `common_clips`, `invert`, `dilate` |
+| `ClipList` | clips from *many* sessions, e.g. a sample of VEDB to analyze; supports `+`, `-`, `&`, `common_clips`, `dilate`, `by_session`, `save` / `load` |
 
 All times are in seconds, zero-referenced to the start of the session (the
 `*_timestamps_0start.npy` files).
@@ -82,6 +82,39 @@ samples = ClipList([c for c in ses.clips if c.task == 'walking'], name='walking'
 samples.save()                                 # sample_directory / walking.npz
 samples = ClipList.load('walking.npz')
 ```
+
+## Clips and clip lists
+
+A clip is the time interval `[onset, offset)` on its session's clock: it
+includes samples at or after `onset` and before `offset`. Clips compare by
+value (`==`, sorting by session then time, usable in sets).
+
+The operators on `SessionClipList` and `ClipList` work on **time**:
+
+| Expression | Result |
+| --- | --- |
+| `A + B` | time covered by A or B; clips that overlap or touch are merged into one |
+| `A & B` | time covered by both A and B (clips that only touch share no time) |
+| `A - B` | time of A not covered by B; clips of A are trimmed or split |
+| `A.common_clips(B)` | whole clips of A or B that overlap (or touch) a clip of the other list, merged; same as `B.common_clips(A)` |
+
+For example, with walking `W = [0, 60)` and blinks `K = [10, 10.3), [30, 30.2)`:
+`W - K` gives `[0, 10), [10.3, 30), [30.2, 60)`; `W & K` gives the two
+blinks; `W + K` gives `[0, 60)`; and `W.common_clips(K)` gives `[0, 60)`.
+
+- **Tags:** trimmed or split clips keep their tag; merged clips and pieces
+  of shared time combine the distinct tags with `|` (e.g.
+  `'kitchen:cooking|kitchen:cleaning'`); clips made from a binary mask
+  (`from_binary`, `invert`) have no tag. `clip.location` / `clip.task` parse
+  each part (`'loc:task'`; a part without `:` is a task) and join unique
+  values with `|`.
+- **Sessions:** combining `SessionClipList`s of different sessions raises a
+  `ValueError`. `ClipList` operations are done per session (clips of
+  different sessions never interact), and results are sorted by session and
+  onset. `ClipList.by_session()` splits a ClipList into one SessionClipList
+  per session; `SessionClipList.to_cliplist()` goes the other way.
+- Empty results are empty `SessionClipList` / `ClipList` objects, so
+  operations can be chained.
 
 ## Relation to vedb-gaze
 
