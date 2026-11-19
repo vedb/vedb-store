@@ -1195,7 +1195,8 @@ class SessionClip(object):
             ax_gc.set_yticks([0, 0.5, 1])
             ax_gc.set_yticklabels(tick_labels)
             ax_gc.grid('on', linestyle=':', color=(0.95, 0.85, 0))
-            #plt.close(fig)
+            # Close figure
+            plt.close(fig)
             
             def set_ellipse(ellipse_h, dot_h, ellipse, frame):
                 """h_s are two handles: for ellipse, for center dot"""
