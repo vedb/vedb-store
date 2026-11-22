@@ -1022,18 +1022,21 @@ class SessionClip(object):
             fig, ax = plt.subplots()
         st, fin = self.onset, self.offset
         if yl is None:
-            yl = plt.ylim()
+            if vert:
+                yl = ax.get_xlim()
+            else:
+                yl = ax.get_ylim()
         if vert:
             # interpret yl as xlim, w as height
             ax.fill([yl[0], yl[0], yl[1], yl[1]],
                 [st, fin, fin, st],
                 color=fcol, edgecolor='none', zorder=zorder)
-            plt.xlim(yl)
+            ax.set_xlim(yl)
         else:
             ax.fill([st, fin, fin, st],
                 [yl[0], yl[0], yl[1], yl[1]],
                 color=fcol, edgecolor='none', zorder=zorder)
-            plt.ylim(yl)
+            ax.set_ylim(yl)
         
 
     def make_gaze_animation(self,
