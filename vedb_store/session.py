@@ -737,6 +737,34 @@ class SessionClip(object):
 
     def __hash__(self):
         return hash(self._value())
+
+    # Time-based operators with another SessionClip or a list of clips give a
+    # ClipList (per session; see ClipList). With a SessionClipList or ClipList
+    # on the other side, that list's operator is used (via NotImplemented), so
+    # e.g. `clip & A` is a SessionClipList when A is one.
+    def __add__(self, other):
+        if isinstance(other, (SessionClipList, ClipList)):
+            return NotImplemented
+        return ClipList([self]) + other
+
+    def __radd__(self, other):
+        return ClipList(_as_clips(other)) + self
+
+    def __and__(self, other):
+        if isinstance(other, (SessionClipList, ClipList)):
+            return NotImplemented
+        return ClipList([self]) & other
+
+    def __rand__(self, other):
+        return ClipList(_as_clips(other)) & self
+
+    def __sub__(self, other):
+        if isinstance(other, (SessionClipList, ClipList)):
+            return NotImplemented
+        return ClipList([self]) - other
+
+    def __rsub__(self, other):
+        return ClipList(_as_clips(other)) - self
     
     def load_gaze_pipeline(self, pipeline=None, clock='native', eye=None, validation_epoch=0):
         """Load specific gaze pipeline. Allows for non-default gaze to be loaded.
@@ -1558,12 +1586,13 @@ class SessionClipList(_ClipSummaries):
     Tags: trimmed / split clips keep their tag; merged clips and pieces of
     shared time get the distinct tags combined with '|' (e.g. 'a:b|c:d').
     Clips made from a binary mask (`from_binary`, `invert`) have tag None.
-    The operators `+ & -` between lists of different sessions raise
-    ValueError (use `ClipList` for clips from several sessions); a list
-    with session None combines with any session. `clip_and` / `clip_not`
-    also accept a SessionClip (treated as a one-clip list), a ClipList, or a
-    list of clips, and use only the clips from this list's session (or
-    without a session), ignoring the rest. Empty results are empty
+    The operators `+ & -` and `clip_and` / `clip_not` accept a SessionClip
+    (treated as a one-clip list), a SessionClipList, a ClipList, or a list
+    of clips, on either side of the operator, and use only the clips from
+    this list's session (or without a session), ignoring the rest; the
+    result is a SessionClipList for this session (use a ClipList on the
+    left to keep all sessions). A list with session None takes the session
+    of the clips it is combined with. Empty results are empty
     SessionClipLists.
     """
     def __init__(self, onsets_offsets, native_timestamps, session=None, tags=None):
@@ -1708,30 +1737,35 @@ class SessionClipList(_ClipSummaries):
         """ClipList with the clips of this list"""
         return ClipList(list(self), name=name)
 
-    def _check_other(self, other):
-        """Session of the result of combining with `other`; ValueError if
-        `other` is from a different session"""
-        if not isinstance(other, SessionClipList):
-            raise TypeError(f'Expected a SessionClipList, got {type(other).__name__}')
-        if (self.session is not None) and (other.session is not None) and (self.session != other.session):
-            raise ValueError(f"Can't combine clips of session {self.session} with clips of "
-                             f"session {other.session}; use ClipList for clips from several sessions")
-        return self.session if self.session is not None else other.session
-
-    def __add__(self, cliplist):
+    # Time-based operators. The other operand may be a SessionClip, a
+    # SessionClipList, a ClipList, or a list of SessionClips; only its clips
+    # from this list's session (or without a session) are used, and the
+    # result is a SessionClipList for this session.
+    def __add__(self, clips):
         """Time union; overlapping or touching clips are merged (tags combined)"""
-        session = self._check_other(cliplist)
-        return self._new(_merge_clips(list(self) + list(cliplist)), session=session)
+        others, session = self._same_session_clips(clips)
+        return self._new(_merge_clips(list(self) + others), session=session)
 
-    def __and__(self, cliplist):
-        """Time shared with `cliplist` (tags combined)"""
-        session = self._check_other(cliplist)
-        return self._new(_intersect_clips(list(self), list(cliplist)), session=session)
+    # union and intersection are symmetric (`clip + A`, `[clips] & A`)
+    __radd__ = __add__
 
-    def __sub__(self, cliplist):
-        """Time of this list not covered by `cliplist` (clips trimmed / split)"""
-        session = self._check_other(cliplist)
-        return self._new(_subtract_clips(list(self), list(cliplist)), session=session)
+    def __and__(self, clips):
+        """Time shared with `clips` (tags combined)"""
+        others, session = self._same_session_clips(clips)
+        return self._new(_intersect_clips(list(self), others), session=session)
+
+    __rand__ = __and__
+
+    def __sub__(self, clips):
+        """Time of this list not covered by `clips` (clips trimmed / split)"""
+        others, session = self._same_session_clips(clips)
+        return self._new(_subtract_clips(list(self), others), session=session)
+
+    def __rsub__(self, clips):
+        """`clips - A` with a SessionClip or list of clips on the left: time of
+        `clips` (this session's) not covered by this list"""
+        others, session = self._same_session_clips(clips)
+        return self._new(_subtract_clips(others, list(self)), session=session)
 
     def _same_session_clips(self, clips):
         """Clips of `clips` (SessionClip, SessionClipList, ClipList, or list)
@@ -1796,10 +1830,12 @@ class ClipList(_ClipSummaries):
 
     Logical operators and `clip_and` / `clip_not` work like those of
     SessionClipList (see there), separately for each session: clips of
-    different sessions never interact. Sessions in only one list pass
-    through `+`, drop out of `&` and `clip_and`, and are unchanged by `-`
-    and `clip_not` (sessions only in the base list). Results
-    are sorted by (session, onset) and keep this list's name.
+    different sessions never interact. The other operand may be a
+    SessionClip, SessionClipList, ClipList, or list of clips (on either side
+    of `+ & -`). Sessions in only one operand pass through `+`, drop out of
+    `&` and `clip_and`, and are unchanged by `-` and `clip_not` (sessions
+    only in the base list). Results are sorted by (session, onset) and keep
+    this list's name.
     """
     def __init__(self, clips, name='MyClipList', load_gaze_centered=False):
         """List of clips from potentially disparate sessions
@@ -1901,17 +1937,31 @@ class ClipList(_ClipSummaries):
                 out.extend(fn([], clips_b))
         return self._new(out)
 
-    def __add__(self, cliplist):
+    # Time-based operators, per session. The other operand may be a
+    # SessionClip, a SessionClipList, a ClipList, or a list of SessionClips.
+    def __add__(self, clips):
         """Time union per session; overlapping or touching clips are merged"""
-        return self._per_session(cliplist, lambda a, b: _merge_clips(a + b), left_only=True, right_only=True)
+        return self._per_session(_as_clips(clips), lambda a, b: _merge_clips(a + b),
+                                 left_only=True, right_only=True)
 
-    def __and__(self, cliplist):
-        """Time shared with `cliplist`, per session"""
-        return self._per_session(cliplist, _intersect_clips)
+    # union and intersection are symmetric (`clip + L`, `[clips] & L`)
+    __radd__ = __add__
 
-    def __sub__(self, cliplist):
-        """Time not covered by `cliplist`, per session (clips trimmed / split)"""
-        return self._per_session(cliplist, _subtract_clips, left_only=True)
+    def __and__(self, clips):
+        """Time shared with `clips`, per session"""
+        return self._per_session(_as_clips(clips), _intersect_clips)
+
+    __rand__ = __and__
+
+    def __sub__(self, clips):
+        """Time not covered by `clips`, per session (clips trimmed / split)"""
+        return self._per_session(_as_clips(clips), _subtract_clips, left_only=True)
+
+    def __rsub__(self, clips):
+        """`clips - L` with a SessionClip or list of clips on the left: their
+        time not covered by this list, per session"""
+        left = ClipList(_as_clips(clips), name=self.name, load_gaze_centered=self.load_gaze_centered)
+        return left._per_session(list(self), _subtract_clips, left_only=True)
 
     def clip_and(self, clips):
         """Whole clips of this list or `clips` that overlap (or touch) a clip
