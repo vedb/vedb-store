@@ -1022,18 +1022,21 @@ class SessionClip(object):
             fig, ax = plt.subplots()
         st, fin = self.onset, self.offset
         if yl is None:
-            yl = plt.ylim()
+            if vert:
+                yl = ax.get_xlim()
+            else:
+                yl = ax.get_ylim()
         if vert:
             # interpret yl as xlim, w as height
             ax.fill([yl[0], yl[0], yl[1], yl[1]],
                 [st, fin, fin, st],
                 color=fcol, edgecolor='none', zorder=zorder)
-            plt.xlim(yl)
+            ax.set_xlim(yl)
         else:
             ax.fill([st, fin, fin, st],
                 [yl[0], yl[0], yl[1], yl[1]],
                 color=fcol, edgecolor='none', zorder=zorder)
-            plt.ylim(yl)
+            ax.set_ylim(yl)
         
 
     def make_gaze_animation(self,
@@ -1471,7 +1474,71 @@ def _indices_to_times(onoff_indices, native_timestamps):
     return out
 
 
-class SessionClipList(object):
+class _ClipSummaries(object):
+    """Task / location summaries shared by SessionClipList and ClipList
+
+    Labels come from each clip's `task` / `location` (see SessionClip). A
+    merged clip with a combined tag (e.g. 'kitchen:cooking|kitchen:cleaning')
+    counts under its combined label (e.g. task 'cooking|cleaning'), so every
+    second is counted once.
+    """
+    @property
+    def clip_tasks(self):
+        """Task of each clip"""
+        return [x.task for x in self]
+
+    @property
+    def clip_locations(self):
+        """Location of each clip"""
+        return [x.location for x in self]
+
+    @property
+    def tasks(self):
+        """Sorted unique tasks (None last)"""
+        return _sort_unique(self.clip_tasks)
+
+    @property
+    def locations(self):
+        """Sorted unique locations (None last)"""
+        return _sort_unique(self.clip_locations)
+
+    @property
+    def task_count(self):
+        """dict of task -> number of clips"""
+        return unique(self.clip_tasks)[1]
+
+    @property
+    def location_count(self):
+        """dict of location -> number of clips"""
+        return unique(self.clip_locations)[1]
+
+    @property
+    def task_durations(self):
+        """dict of task -> total duration of its clips (seconds), in the order
+        of `tasks`"""
+        return _durations_by(self.clip_tasks, self)
+
+    @property
+    def location_durations(self):
+        """dict of location -> total duration of its clips (seconds), in the
+        order of `locations`"""
+        return _durations_by(self.clip_locations, self)
+
+    def plot_durations(self, by='task', **kwargs):
+        """Pie chart of the time taken up by each task or location; see the
+        module-level `plot_durations` for arguments"""
+        return plot_durations(self, by=by, **kwargs)
+
+
+def _durations_by(labels, clips):
+    """dict of label -> summed clip duration (seconds), keys sorted (None last)"""
+    totals = {}
+    for label, clip in zip(labels, clips):
+        totals[label] = totals.get(label, 0.0) + float(clip.duration)
+    return dict((k, totals[k]) for k in _sort_unique(totals.keys()))
+
+
+class SessionClipList(_ClipSummaries):
     """Clips within ONE session, on that session's timeline
 
     Logical operators work on time (on the session clock):
@@ -1724,7 +1791,7 @@ def _sort_unique(values):
     return sorted(set(values), key=lambda v: (v is None, '' if v is None else str(v)))
 
 
-class ClipList(object):
+class ClipList(_ClipSummaries):
     """Clips from potentially many sessions (e.g. a sample of VEDB)
 
     Logical operators and `clip_and` / `clip_not` work like those of
@@ -1800,36 +1867,9 @@ class ClipList(object):
         """dict of session -> number of clips"""
         return unique(self.clip_sessions)[1]
     
-    @property
-    def tasks(self):
-        """Sorted unique tasks (None last)"""
-        return _sort_unique(self.clip_tasks)
+    # tasks, locations, *_count, *_durations, clip_tasks / clip_locations
+    # and plot_durations come from _ClipSummaries
 
-    @property
-    def clip_tasks(self):
-        """Task of each clip"""
-        return [x.task for x in self]
-
-    @property
-    def task_count(self):
-        """dict of task -> number of clips"""
-        return unique(self.clip_tasks)[1]
-
-    @property
-    def locations(self):
-        """Sorted unique locations (None last)"""
-        return _sort_unique(self.clip_locations)
-
-    @property
-    def clip_locations(self):
-        """Location of each clip"""
-        return [x.location for x in self]
-
-    @property
-    def location_count(self):
-        """dict of location -> number of clips"""
-        return unique(self.clip_locations)[1]
-    
     @property
     def tags(self):
         """Tag of each clip"""
@@ -2045,6 +2085,97 @@ def load_clips(fname):
 
 
 # Maybe move me: 
+
+# Pie chart colors: slots 1-6 of the reference categorical palette, in fixed
+# order (adjacent wedges, incl. the last-to-first wrap, are validated for
+# color-vision-deficient and normal-vision separation); "Other" is a muted gray
+_PIE_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300']
+_PIE_OTHER_COLOR = '#898781'
+_PIE_SURFACE = '#fcfcfb'
+_PIE_INK = '#0b0b0b'
+_PIE_INK_SECONDARY = '#52514e'
+_TIME_UNITS = {'s': 1., 'min': 60., 'h': 3600.}
+
+
+def plot_durations(clips, by='task', ax=None, units='min', max_slices=6, colors=None,
+                   none_label='(none)', title=None):
+    """Pie chart of the total time taken up by each task or location
+
+    One wedge per task (or location), sized by the summed duration of its
+    clips (`task_durations` / `location_durations`). Wedges are in label
+    order (the order of `tasks` / `locations`), starting at 12 o'clock and
+    going clockwise, so the same label set always gets the same colors. If
+    there are more than `max_slices` labels, the smallest are combined into
+    a gray "Other" wedge. The legend gives each label's duration and share
+    of the total.
+
+    Parameters
+    ----------
+    clips : SessionClipList, ClipList, SessionClip, or list of SessionClips
+    by : str, optional
+        'task' or 'location', by default 'task'
+    ax : matplotlib axis, optional
+        axis into which to plot, by default None (new figure)
+    units : str, optional
+        's', 'min' or 'h', units for durations in the legend, by default 'min'
+    max_slices : int, optional
+        maximum number of labelled wedges (the rest go into "Other"), by
+        default 6 (at most 6 with the default colors)
+    colors : dict or None, optional
+        label -> color, to keep colors fixed across charts; labels not in
+        the dict get default colors. By default None (default colors)
+    none_label : str, optional
+        legend name for clips without a task / location, by default '(none)'
+    title : str or None, optional
+        axis title, by default 'Time by <task / location> (total ...)'
+
+    Returns
+    -------
+    matplotlib axis
+    """
+    if by not in ('task', 'location'):
+        raise ValueError(f"`by` must be 'task' or 'location', got {by!r}")
+    if units not in _TIME_UNITS:
+        raise ValueError(f"`units` must be one of {list(_TIME_UNITS)}, got {units!r}")
+    clips = _as_clips(clips)
+    durations = _durations_by([getattr(c, by) for c in clips], clips)
+    total = sum(durations.values())
+    if total <= 0:
+        raise ValueError('No clip time to plot (no clips, or all clips have zero duration)')
+    labels = list(durations)
+    if len(labels) > max_slices:
+        largest = sorted(labels, key=lambda label: -durations[label])[:max_slices]
+        shown = [label for label in labels if label in largest]
+    else:
+        shown = labels
+    other = total - sum(durations[label] for label in shown)
+    if (colors is None) and (len(shown) > len(_PIE_COLORS)):
+        raise ValueError(f'At most {len(_PIE_COLORS)} wedges with the default colors; '
+                         'lower `max_slices` or give `colors`')
+    colors = {} if colors is None else colors
+    wedge_colors = [colors.get(label, _PIE_COLORS[j % len(_PIE_COLORS)]) for j, label in enumerate(shown)]
+    values = [durations[label] for label in shown]
+    names = [none_label if label is None else str(label) for label in shown]
+    if other > 0:
+        values.append(other)
+        names.append('Other')
+        wedge_colors.append(colors.get('Other', _PIE_OTHER_COLOR))
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(7, 4))
+    wedges, _ = ax.pie(values, colors=wedge_colors, startangle=90, counterclock=False,
+                       wedgeprops=dict(edgecolor=_PIE_SURFACE, linewidth=2))
+    ax.set_aspect('equal')
+    scale = _TIME_UNITS[units]
+    entries = [f'{name}: {value / scale:.1f} {units} ({value / total:.0%})'
+               for name, value in zip(names, values)]
+    ax.legend(wedges, entries, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False,
+              labelcolor=_PIE_INK_SECONDARY)
+    if title is None:
+        title = f'Time by {by} (total {total / scale:.1f} {units})'
+    ax.set_title(title, color=_PIE_INK)
+    return ax
+
 
 def gaze_rect(gaze_position, hdim, vdim, ax=None, linewidth=1, edgecolor='r', **kwargs):
     if ax is None:

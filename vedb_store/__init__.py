@@ -1,2 +1,2 @@
 from . import options, utils, session
-from .session import Session, SessionClip, SessionClipList, ClipList
+from .session import Session, SessionClip, SessionClipList, ClipList, plot_durations

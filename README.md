@@ -122,6 +122,30 @@ blinks; `W + K` gives `[0, 60)`; `W.clip_and(K)` gives `[0, 60)`; and
 - Empty results are empty `SessionClipList` / `ClipList` objects, so
   operations can be chained.
 
+### Task and location summaries
+
+`SessionClipList` and `ClipList` both have:
+
+| Property / method | Result |
+| --- | --- |
+| `tasks`, `locations` | sorted unique labels (None last) |
+| `clip_tasks`, `clip_locations` | the label of each clip |
+| `task_count`, `location_count` | `{label: number of clips}` |
+| `task_durations`, `location_durations` | `{label: total duration of its clips in seconds}` |
+| `plot_durations(by='task' or 'location')` | pie chart of the durations (also `vedb_store.plot_durations(clips, by=...)`) |
+
+A merged clip with a combined tag (e.g. `'kitchen:cooking|kitchen:cleaning'`)
+counts under its combined label (task `'cooking|cleaning'`), so every second
+is counted once. The pie shows at most 6 labelled wedges (the rest are
+combined into "Other"); pass `colors={label: color}` to keep colors fixed
+across charts.
+
+```python
+clips = ClipList.load('walking.npz')
+clips.task_durations          # {'reading': 512.3, 'walking': 1830.0, ...}
+clips.plot_durations(by='location', units='min')
+```
+
 ## Relation to vedb-gaze
 
 vedb-store does not keep its own copy of anything vedb-gaze defines:
