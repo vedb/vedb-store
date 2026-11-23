@@ -1503,7 +1503,7 @@ def _indices_to_times(onoff_indices, native_timestamps):
 
 
 class _ClipSummaries(object):
-    """Task / location summaries shared by SessionClipList and ClipList
+    """Task / location summaries and filters shared by SessionClipList and ClipList
 
     Labels come from each clip's `task` / `location` (see SessionClip). A
     merged clip with a combined tag (e.g. 'kitchen:cooking|kitchen:cleaning')
@@ -1551,6 +1551,63 @@ class _ClipSummaries(object):
         """dict of location -> total duration of its clips (seconds), in the
         order of `locations`"""
         return _durations_by(self.clip_locations, self)
+
+    @property
+    def durations(self):
+        """Duration (seconds) of each clip, as an array"""
+        return np.asarray([x.duration for x in self], dtype=float)
+
+    def filter(self, task=None, location=None, session=None, min_duration=0, max_duration=np.inf):
+        """Clips that match all of the given criteria, as the same kind of list
+
+        Parameters
+        ----------
+        task, location, session : str, iterable, or None, optional
+            keep clips whose task / location / session is one of these
+            (a single string is one name). Names are matched exactly as
+            stored (labels from `parse_csv` are lower case, with spaces
+            instead of underscores); a combined label such as
+            'cooking|cleaning' only matches that full label. Include None
+            to keep clips without a task / location. By default None (no
+            filtering on that field). A warning lists requested names that
+            no clip in this list has (e.g. typos).
+        min_duration, max_duration : scalar, optional
+            keep clips with min_duration < duration < max_duration
+            (seconds), by default 0 and inf
+
+        Returns
+        -------
+        SessionClipList or ClipList
+            same kind as this list (same session / timeline or name),
+            with the matching clips in their original order
+        """
+        criteria = []
+        for field, wanted in (('task', task), ('location', location), ('session', session)):
+            if wanted is None:
+                continue
+            wanted = {wanted} if isinstance(wanted, str) else set(wanted)
+            available = set(getattr(c, field) for c in self)
+            missing = [w for w in wanted if w not in available]
+            if len(missing) > 0:
+                warnings.warn(f'No clips with {field} {_sort_unique(missing)} in this list; '
+                              f'available: {_sort_unique(available)}')
+            criteria.append((field, wanted))
+        keep = [c for c in self
+                if all(getattr(c, field) in wanted for field, wanted in criteria)
+                and (c.duration > min_duration) and (c.duration < max_duration)]
+        return self._subset(keep)
+
+    def filter_task(self, tasks):
+        """Clips whose task is one of `tasks` (str or iterable); see `filter`"""
+        return self.filter(task=tasks)
+
+    def filter_location(self, locations):
+        """Clips whose location is one of `locations` (str or iterable); see `filter`"""
+        return self.filter(location=locations)
+
+    def filter_duration(self, min_duration=0, max_duration=np.inf):
+        """Clips with min_duration < duration < max_duration (seconds); see `filter`"""
+        return self.filter(min_duration=min_duration, max_duration=max_duration)
 
     def plot_durations(self, by='task', **kwargs):
         """Pie chart of the time taken up by each task or location; see the
@@ -1674,9 +1731,9 @@ class SessionClipList(_ClipSummaries):
     def times(self, include_duration=False):
         return np.asarray([clip.times(include_duration) for clip in self.clip_list])
         
-    def filter_duration(self, min_duration=0, max_duration=np.inf):
-        """Clips with min_duration < duration < max_duration (seconds)"""
-        return self._new([x for x in self if (x.duration > min_duration) and (x.duration < max_duration)])
+    def _subset(self, clips):
+        """SessionClipList with `clips` (in the given order) on the same timeline"""
+        return self._new(clips)
 
     def dilate(self, pre=0, post=0, merge=False):
         """dilate time for each clip. Times in seconds.
@@ -1885,10 +1942,6 @@ class ClipList(_ClipSummaries):
         return ClipList(clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
 
     @property
-    def durations(self):
-        return np.asarray([x.duration for x in self])
-
-    @property
     def sessions(self):
         """Sorted unique sessions (None last)"""
         return _sort_unique(self.clip_sessions)
@@ -1914,10 +1967,9 @@ class ClipList(_ClipSummaries):
     def times(self, include_duration=False):
             return np.asarray([clip.times(include_duration) for clip in self])
 
-    def filter_duration(self, min_duration=0, max_duration=np.inf):
-        """Durations in seconds"""
-        output_clips = [x for x in self if (x.duration > min_duration) and (x.duration  < max_duration)]
-        return ClipList(output_clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
+    def _subset(self, clips):
+        """ClipList with `clips` (in the given order) and this list's name"""
+        return ClipList(clips, name=self.name, load_gaze_centered=self.load_gaze_centered)
 
     def _per_session(self, cliplist, fn, left_only=False, right_only=False):
         """Apply `fn(clips_a, clips_b)` per session; sessions present only in

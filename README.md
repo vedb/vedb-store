@@ -135,10 +135,15 @@ blinks; `W + K` gives `[0, 60)`; `W.clip_and(K)` gives `[0, 60)`; and
 | `task_count`, `location_count` | `{label: number of clips}` |
 | `task_durations`, `location_durations` | `{label: total duration of its clips in seconds}` |
 | `plot_durations(by='task' or 'location')` | pie chart of the durations (also `vedb_store.plot_durations(clips, by=...)`) |
+| `durations` | duration (seconds) of each clip, as an array |
+| `filter(task=, location=, session=, min_duration=, max_duration=)` | same kind of list with only the clips matching all given criteria (each name criterion is a string or a tuple of names; include `None` for unlabelled clips) |
+| `filter_task(tasks)`, `filter_location(locations)`, `filter_duration(min, max)` | shortcuts for `filter` with one criterion |
 
 A merged clip with a combined tag (e.g. `'kitchen:cooking|kitchen:cleaning'`)
 counts under its combined label (task `'cooking|cleaning'`), so every second
-is counted once. The pie shows at most 6 labelled wedges (the rest are
+is counted once (and a filter on `'cooking'` does not match it; names are
+matched exactly as stored). A warning lists requested names that no clip
+has. The pie shows at most 6 labelled wedges (the rest are
 combined into "Other"); pass `colors={label: color}` to keep colors fixed
 across charts.
 
@@ -146,6 +151,8 @@ across charts.
 clips = ClipList.load('walking.npz')
 clips.task_durations          # {'reading': 512.3, 'walking': 1830.0, ...}
 clips.plot_durations(by='location', units='min')
+walk_read = clips.filter_task(('walking', 'reading'))
+long_kitchen = clips.filter(location='kitchen', min_duration=5)
 ```
 
 ## Relation to vedb-gaze
