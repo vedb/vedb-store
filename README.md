@@ -111,13 +111,15 @@ blinks; `W + K` gives `[0, 60)`; `W.clip_and(K)` gives `[0, 60)`; and
   (`from_binary`, `invert`) have no tag. `clip.location` / `clip.task` parse
   each part (`'loc:task'`; a part without `:` is a task) and join unique
   values with `|`.
-- **Sessions:** combining `SessionClipList`s of different sessions with
-  `+`, `&` or `-` raises a `ValueError`. `clip_and` / `clip_not` also accept
-  a single `SessionClip` (treated as a one-clip list), a `ClipList`, or a
-  list of clips, and check each clip's session: only clips from the same
-  session are combined / excluded, the rest are ignored. `ClipList` operations are done per session (clips of
-  different sessions never interact), and results are sorted by session and
-  onset. `ClipList.by_session()` splits a ClipList into one SessionClipList
+- **Sessions and mixed types:** `+`, `&`, `-`, `clip_and` and `clip_not`
+  work between any of `SessionClip` (treated as a one-clip list),
+  `SessionClipList`, `ClipList` and lists of clips, in either order, and
+  only ever combine clips from the same session. With a `SessionClipList`
+  on the left, the result is a `SessionClipList` for its session (clips of
+  other sessions are ignored); with a `ClipList` on the left, every session
+  is kept and handled separately (clips of different sessions never
+  interact); two `SessionClip`s give a `ClipList`. Results are sorted by
+  session and onset. `ClipList.by_session()` splits a ClipList into one SessionClipList
   per session; `SessionClipList.to_cliplist()` goes the other way.
 - Empty results are empty `SessionClipList` / `ClipList` objects, so
   operations can be chained.
